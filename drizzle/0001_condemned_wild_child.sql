@@ -1,0 +1,1 @@
+ALTER TABLE `extraction_rules` ADD `sheet_headers_json` text DEFAULT '[]' NOT NULL;

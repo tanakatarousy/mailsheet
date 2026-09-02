@@ -1,0 +1,1 @@
+name = "mailsheet"\nmain = "dist/server/index.js"\ncompatibility_date = "2026-08-01"\n\n[assets]\ndirectory = "dist/client"\nbinding = "ASSETS"\n\n[[d1_databases]]\nbinding = "DB"\ndatabase_name = "mailsheet"\ndatabase_id = "REPLACE_WITH_D1_DATABASE_ID"\nmigrations_dir = "drizzle"\n
