@@ -6,3 +6,9 @@ workers_dev = true
 [assets]
 directory = "dist/client"
 binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mailsheet"
+database_id = "6a089e85-8d97-4eac-92d6-d80b90a3ae11"
+migrations_dir = "drizzle"
