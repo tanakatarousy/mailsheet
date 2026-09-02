@@ -48,6 +48,13 @@ export type AdminOverview = {
   ok: true;
   users: AdminUser[];
   accessHistory: Array<{ email: string; event_type: string; created_at: string }>;
+  publicTraffic: {
+    todayViews: number;
+    sevenDayViews: number;
+    sevenDayVisitors: number;
+    recent: Array<{ visitor_id: string; path: string; referrer_host: string; device: string; created_at: string }>;
+  };
+  feedback: Array<{ id: number; category: string; pain: string; current_process: string; desired_outcome: string; contact_email: string; status: string; created_at: string }>;
   metrics: {
     users: number;
     activeUsers: number;

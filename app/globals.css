@@ -3216,11 +3216,66 @@ svg {
 .app-metrics strong {
   margin: 8px 0 9px;
   color: var(--blue);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 51px;
-  font-style: italic;
-  font-weight: 500;
+  font-family: Inter, "Helvetica Neue", Arial, sans-serif;
+  font-size: 48px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  letter-spacing: -.05em;
   line-height: 1;
+}
+
+.request-section {
+  display: grid;
+  padding: 130px max(24px, calc((100vw - 1120px) / 2));
+  grid-template-columns: .82fr 1.18fr;
+  gap: 76px;
+  border-top: 1px solid var(--blue);
+  background: #fffdf7;
+}
+
+.request-section__copy > span { color: var(--red); font-size: 10px; font-weight: 800; letter-spacing: .16em; }
+.request-section__copy h2 { margin: 16px 0 24px; color: var(--blue); font-size: clamp(42px, 4.3vw, 68px); line-height: 1.12; letter-spacing: -.055em; }
+.request-section__copy p { color: var(--muted); font-size: 14px; line-height: 1.9; }
+.request-section__copy ul { margin: 28px 0 0; padding: 0; list-style: none; }
+.request-section__copy li { padding: 12px 0; border-bottom: 1px solid var(--soft-line); color: var(--blue); font-size: 13px; }
+.request-section__copy li::before { margin-right: 9px; color: var(--red); content: "→"; }
+
+.request-form { display: grid; padding: 34px; grid-template-columns: 1fr 1fr; gap: 20px; border: 1px solid var(--blue); border-radius: 28px; background: var(--white); box-shadow: 12px 12px 0 var(--yellow); }
+.request-form label { display: grid; gap: 8px; }
+.request-form label > span { color: var(--blue); font-size: 11px; font-weight: 700; }
+.request-form label > span b { color: var(--red); font-size: 9px; }
+.request-form input, .request-form select, .request-form textarea { width: 100%; border: 1px solid var(--soft-line); border-radius: 10px; background: #fffefb; color: var(--ink); font: inherit; font-size: 13px; }
+.request-form input, .request-form select { min-height: 48px; padding: 0 14px; }
+.request-form textarea { min-height: 116px; padding: 13px 14px; resize: vertical; line-height: 1.7; }
+.request-form input:focus, .request-form select:focus, .request-form textarea:focus { border-color: var(--blue); outline: 3px solid rgba(20, 38, 178, .1); }
+.request-form__wide, .request-form__submit, .request-form__message { grid-column: 1 / -1; }
+.request-form__trap { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.request-form__submit { display: flex; align-items: center; gap: 18px; }
+.request-form__submit small { color: var(--muted); font-size: 10px; line-height: 1.6; }
+.request-form__message { margin: 0; padding: 12px 14px; border-radius: 8px; background: #eaf8ef; color: #17774a; font-size: 12px; }
+.request-form__message.is-error { background: #fff0ee; color: #b72d23; }
+
+.traffic-summary { display: flex; gap: 8px; flex-wrap: wrap; }
+.traffic-summary > span { padding: 8px 11px; border: 1px solid var(--soft-line); border-radius: 999px; color: var(--muted); font-size: 10px; }
+.traffic-summary strong { margin-left: 4px; color: var(--blue); font-size: 15px; font-variant-numeric: tabular-nums; }
+.access-log strong small { color: var(--muted); font-size: 9px; font-weight: 500; }
+.feedback-admin-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.feedback-admin-list article { padding: 18px; border: 1px solid var(--soft-line); border-radius: 10px; background: #fffefb; }
+.feedback-admin-list header { display: flex; margin-bottom: 10px; justify-content: space-between; gap: 12px; }
+.feedback-admin-list header span { color: var(--red); font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.feedback-admin-list time, .feedback-admin-list small { color: var(--muted); font-size: 9px; }
+.feedback-admin-list article > strong { display: block; color: var(--blue); font-size: 13px; line-height: 1.65; }
+.feedback-admin-list p { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.feedback-admin-list a { display: inline-block; margin-top: 12px; color: var(--blue); font-size: 10px; }
+
+@media (max-width: 800px) {
+  .request-section { padding: 90px 20px; grid-template-columns: 1fr; gap: 44px; }
+  .request-section__copy h2 { font-size: 39px; }
+  .request-form { padding: 22px 18px; grid-template-columns: 1fr; border-radius: 20px; box-shadow: 7px 7px 0 var(--yellow); }
+  .request-form label, .request-form__submit, .request-form__message { grid-column: 1; }
+  .request-form__submit { align-items: flex-start; flex-direction: column; }
+  .feedback-admin-list { grid-template-columns: 1fr; }
 }
 
 .app-metrics small {

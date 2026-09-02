@@ -17,6 +17,15 @@ function json(data, status = 200, headers = {}) {
   });
 }
 
+function publicVisitorCookie(value) {
+  return `mailsheet_visitor=${encodeURIComponent(value)}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`;
+}
+
+function safeReferrerHost(value) {
+  if (!value) return "";
+  try { return new URL(value).hostname.slice(0, 180); } catch { return ""; }
+}
+
 function apiError(message, status = 400, code = "bad_request", details) {
   return json({ ok: false, error: { code, message, ...(details ? { details } : {}) } }, status);
 }
@@ -1185,11 +1194,58 @@ async function handleDashboard(request, env) {
   });
 }
 
+async function handlePublicVisit(request, env) {
+  assertSameOrigin(request);
+  const body = await readJson(request, 8_000);
+  const requestedPath = String(body.path || "/");
+  const path = requestedPath.startsWith("/") && !requestedPath.startsWith("//") ? requestedPath.slice(0, 160) : "/";
+  const referrerHost = safeReferrerHost(String(body.referrer || ""));
+  const device = String(body.device || "") === "mobile" ? "mobile" : "desktop";
+  let visitorId = cookieValue(request, "mailsheet_visitor");
+  let createdCookie = false;
+  if (!/^[A-Za-z0-9_-]{20,80}$/.test(visitorId)) {
+    visitorId = randomUrlSafe(18);
+    createdCookie = true;
+  }
+  const db = requireDb(env);
+  const latest = await db.prepare("SELECT created_at FROM public_visits WHERE visitor_id = ? AND path = ? ORDER BY created_at DESC LIMIT 1")
+    .bind(visitorId, path).first();
+  const latestAt = latest?.created_at ? new Date(latest.created_at).getTime() : 0;
+  if (!latestAt || Date.now() - latestAt > 30 * 60_000) {
+    await db.prepare("INSERT INTO public_visits (visitor_id, path, referrer_host, device, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(visitorId, path, referrerHost, device, new Date().toISOString()).run();
+  }
+  return json({ ok: true }, 200, createdCookie ? { "set-cookie": publicVisitorCookie(visitorId) } : {});
+}
+
+async function handleFeedbackSubmit(request, env) {
+  assertSameOrigin(request);
+  const body = await readJson(request, 20_000);
+  if (String(body.website || "")) return json({ ok: true });
+  const category = String(body.category || "").trim().slice(0, 60);
+  const pain = String(body.pain || "").trim().slice(0, 2_000);
+  const currentProcess = String(body.currentProcess || "").trim().slice(0, 2_000);
+  const desiredOutcome = String(body.desiredOutcome || "").trim().slice(0, 2_000);
+  const contactEmail = String(body.contactEmail || "").trim().toLowerCase().slice(0, 240);
+  if (!category || pain.length < 5) throw new HttpError(400, "種類と、現在のお困りごとを入力してください。", "invalid_feedback");
+  if (contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) throw new HttpError(400, "連絡先メールアドレスを確認してください。", "invalid_email");
+  const visitorId = /^[A-Za-z0-9_-]{20,80}$/.test(cookieValue(request, "mailsheet_visitor")) ? cookieValue(request, "mailsheet_visitor") : "";
+  const recent = await requireDb(env).prepare("SELECT COUNT(*) AS count FROM feedback_requests WHERE visitor_id = ? AND created_at >= ?")
+    .bind(visitorId || "anonymous", new Date(Date.now() - 60 * 60_000).toISOString()).first();
+  if (Number(recent?.count || 0) >= 5) throw new HttpError(429, "短時間の送信上限に達しました。時間を置いてお試しください。", "rate_limited");
+  await requireDb(env).prepare(
+    "INSERT INTO feedback_requests (visitor_id, category, pain, current_process, desired_outcome, contact_email, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'new', ?)",
+  ).bind(visitorId, category, pain, currentProcess, desiredOutcome, contactEmail, new Date().toISOString()).run();
+  return json({ ok: true });
+}
+
 async function handleAdminOverview(request, env) {
   await requireAdmin(request, env);
   const db = requireDb(env);
   const month = new Date().toISOString().slice(0, 7);
-  const [usersResult, accessResult, processingResult, eventsResult] = await Promise.all([
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString();
+  const today = new Date().toISOString().slice(0, 10);
+  const [usersResult, accessResult, processingResult, eventsResult, trafficResult, trafficSummary, feedbackResult] = await Promise.all([
     db.prepare(
       `SELECT au.email, au.role, au.status, au.invited_by, au.created_at, au.last_access_at, au.access_count,
               ae.user_id, gc.google_email, gc.gmail_watch_expires_at, gc.last_gmail_notification_at,
@@ -1204,6 +1260,9 @@ async function handleAdminOverview(request, env) {
     db.prepare("SELECT email, event_type, created_at FROM access_events ORDER BY created_at DESC LIMIT 100").all(),
     db.prepare("SELECT status, COUNT(*) AS count FROM processing_history WHERE substr(created_at, 1, 7) = ? GROUP BY status").bind(month).all(),
     db.prepare("SELECT event_type, COUNT(*) AS count FROM system_events WHERE substr(created_at, 1, 7) = ? GROUP BY event_type").bind(month).all(),
+    db.prepare("SELECT visitor_id, path, referrer_host, device, created_at FROM public_visits ORDER BY created_at DESC LIMIT 100").all(),
+    db.prepare("SELECT COUNT(*) AS seven_day_views, COUNT(DISTINCT visitor_id) AS seven_day_visitors, SUM(CASE WHEN substr(created_at, 1, 10) = ? THEN 1 ELSE 0 END) AS today_views FROM public_visits WHERE created_at >= ?").bind(today, sevenDaysAgo).first(),
+    db.prepare("SELECT id, category, pain, current_process, desired_outcome, contact_email, status, created_at FROM feedback_requests ORDER BY created_at DESC LIMIT 100").all(),
   ]);
   const processing = Object.fromEntries((processingResult.results || []).map((row) => [row.status, Number(row.count)]));
   const events = Object.fromEntries((eventsResult.results || []).map((row) => [row.event_type, Number(row.count)]));
@@ -1211,6 +1270,13 @@ async function handleAdminOverview(request, env) {
     ok: true,
     users: usersResult.results || [],
     accessHistory: accessResult.results || [],
+    publicTraffic: {
+      todayViews: Number(trafficSummary?.today_views || 0),
+      sevenDayViews: Number(trafficSummary?.seven_day_views || 0),
+      sevenDayVisitors: Number(trafficSummary?.seven_day_visitors || 0),
+      recent: trafficResult.results || [],
+    },
+    feedback: feedbackResult.results || [],
     metrics: {
       users: (usersResult.results || []).length,
       activeUsers: (usersResult.results || []).filter((row) => row.status === "active").length,
@@ -1272,6 +1338,8 @@ async function routeApi(request, env) {
     return json({ ok: true, service: "mailsheet", oauthConfigured: oauthConfigured(env), databaseConfigured: Boolean(env.DB) });
   }
   if (method === "GET" && url.pathname === "/api/oauth/google/start") return handleOAuthStart(request, env);
+  if (method === "POST" && url.pathname === "/api/public/visit") return handlePublicVisit(request, env);
+  if (method === "POST" && url.pathname === "/api/public/feedback") return handleFeedbackSubmit(request, env);
   if (method === "GET" && url.pathname === "/api/oauth/google/callback") return handleOAuthCallback(request, env);
   if (method === "GET" && url.pathname === "/api/auth/status") return handleAuthStatus(request, env);
   if (method === "POST" && url.pathname === "/api/auth/disconnect") return handleDisconnect(request, env);

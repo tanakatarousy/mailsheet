@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   ApiError,
   apiFetch,
@@ -1081,6 +1081,10 @@ function HistoryTable({ rows }: { rows?: ApiHistoryRow[] }) {
 }
 
 function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
+  const [requestForm, setRequestForm] = useState({ category: "業務ツール", pain: "", currentProcess: "", desiredOutcome: "", contactEmail: "", website: "" });
+  const [requestState, setRequestState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [requestMessage, setRequestMessage] = useState("");
+
   useEffect(() => {
     const elements = Array.from(document.querySelectorAll<HTMLElement>("[data-reveal]"));
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -1094,6 +1098,29 @@ function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
     elements.forEach((element) => observer.observe(element));
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    void postJson("/api/public/visit", {
+      path: window.location.pathname,
+      referrer: document.referrer,
+      device: window.matchMedia("(max-width: 700px)").matches ? "mobile" : "desktop",
+    }).catch(() => undefined);
+  }, []);
+
+  const submitRequest = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setRequestState("sending");
+    setRequestMessage("");
+    try {
+      await postJson<{ ok: true }>("/api/public/feedback", requestForm);
+      setRequestState("sent");
+      setRequestMessage("送信しました。内容を確認し、連絡先がある場合は必要に応じてご連絡します。");
+      setRequestForm((current) => ({ ...current, pain: "", currentProcess: "", desiredOutcome: "", website: "" }));
+    } catch (error) {
+      setRequestState("error");
+      setRequestMessage(errorText(error));
+    }
+  };
 
   return (
     <div className="landing-page" id="top">
@@ -1270,6 +1297,25 @@ function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
           </div>
         </section>
 
+        <section className="request-section" id="request" aria-labelledby="request-title">
+          <div className="request-section__copy" data-reveal>
+            <span>YOUR WORK, YOUR REQUEST</span>
+            <h2 id="request-title">作ってほしいもの、<br />いま困っていること。</h2>
+            <p>MAILSHEETに限らず、Webサービス・アプリ・業務ツールのご要望を募集しています。まとまっていなくても、今のやり方と困りごとだけで大丈夫です。</p>
+            <ul><li>同じ入力や転記を繰り返している</li><li>既存ツールが業務に合わない</li><li>こういうWebサービスがほしい</li></ul>
+          </div>
+          <form className="request-form" onSubmit={submitRequest} data-reveal>
+            <label><span>相談したいもの</span><select value={requestForm.category} onChange={(event) => setRequestForm((current) => ({ ...current, category: event.target.value }))}><option>Webサービス</option><option>アプリ</option><option>業務ツール</option><option>自動化</option><option>MAILSHEETへの要望</option><option>その他</option></select></label>
+            <label className="request-form__wide"><span>現在、何に困っていますか？ <b>必須</b></span><textarea required minLength={5} value={requestForm.pain} onChange={(event) => setRequestForm((current) => ({ ...current, pain: event.target.value }))} placeholder="例：予約メールを毎日Excelへ手入力していて、対応漏れが起きています。" /></label>
+            <label><span>いまはどう対応していますか？</span><textarea value={requestForm.currentProcess} onChange={(event) => setRequestForm((current) => ({ ...current, currentProcess: event.target.value }))} placeholder="例：担当者がメールを開いて転記" /></label>
+            <label><span>どうなったら助かりますか？</span><textarea value={requestForm.desiredOutcome} onChange={(event) => setRequestForm((current) => ({ ...current, desiredOutcome: event.target.value }))} placeholder="例：受信時に自動で一覧化したい" /></label>
+            <label className="request-form__wide"><span>返信先メール（任意）</span><input type="email" value={requestForm.contactEmail} onChange={(event) => setRequestForm((current) => ({ ...current, contactEmail: event.target.value }))} placeholder="you@example.com" /></label>
+            <label className="request-form__trap" aria-hidden="true"><span>Website</span><input tabIndex={-1} autoComplete="off" value={requestForm.website} onChange={(event) => setRequestForm((current) => ({ ...current, website: event.target.value }))} /></label>
+            <div className="request-form__submit"><button className="button button--blue" type="submit" disabled={requestState === "sending"}>{requestState === "sending" ? "送信中…" : "要望を送る"} <Icon name="arrow" size={17} /></button><small>送信内容はサービス改善とご相談への回答に使用します。</small></div>
+            {requestMessage ? <p className={`request-form__message is-${requestState}`} role="status">{requestMessage}</p> : null}
+          </form>
+        </section>
+
         <section className="final-cta">
           <div className="final-cta__path" aria-hidden="true" />
           <div className="final-cta__orb" data-reveal>
@@ -1298,7 +1344,7 @@ type LegalKind = "privacy" | "terms";
 const SUPPORT_EMAIL = import.meta.env.VITE_SUPPORT_EMAIL || "support@example.com";
 
 const privacySections = [
-  { title: "1. 取得する情報", body: <>本サービスは、Google OAuth 2.0による認証に伴い、Googleアカウントのメールアドレス、認証に必要なアクセストークンおよびリフレッシュトークンを取得します。また、利用者が設定した対象メール条件、抽出ルール、Google Sheetsの列対応、処理日時・成否などの履歴を取り扱います。</> },
+  { title: "1. 取得する情報", body: <>本サービスは、Google OAuth 2.0による認証に伴い、Googleアカウントのメールアドレス、認証に必要なアクセストークンおよびリフレッシュトークンを取得します。また、利用者が設定した対象メール条件、抽出ルール、Google Sheetsの列対応、処理日時・成否などの履歴を取り扱います。公開ページでは、アクセス解析のため匿名の閲覧者ID、閲覧ページ、参照元ドメイン、端末種別、閲覧日時を取得します。IPアドレスはアクセス履歴として保存しません。要望フォームを送信した場合は、入力内容と任意の連絡先を取得します。</> },
   { title: "2. Gmailデータの取り扱い", body: <>利用者が指定した条件に合うメールの検索、抽出ルールの作成および実行に必要な範囲で、Gmailのメール本文・送信元・件名等を読み取ります。Gmailは読取専用権限を使用します。現在の仕様では、メール本文および抽出した値を継続保存せず、プレビューと処理のために一時的に利用します。</> },
   { title: "3. Google Sheetsデータの取り扱い", body: <>利用者が指定したSpreadsheetとSheetの見出しを読み取り、利用者が設定・確認した列へ抽出結果を書き込むために使用します。本サービスが利用者の操作と無関係なSpreadsheetへ書き込むことはありません。</> },
   { title: "4. 利用目的", body: <>取得した情報は、Googleアカウントとの接続、対象メールの検索、情報の抽出、Google Sheetsへの転記、処理履歴の表示、不具合調査および本サービスの提供・改善のために利用します。広告配信や取得データの販売には利用しません。</> },
@@ -1367,7 +1413,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [appNotice, setAppNotice] = useState<{ kind: "success" | "warning"; text: string } | null>(
     oauthResult === "connected"
-      ? { kind: "success", text: "Googleアカウントを接続しました。Gmailの読取とSheetsへの書込を利用できます。" }
+      ? { kind: "success", text: "Googleログインと連携が完了しました。Gmailの読取とGoogle Sheetsへの書込を利用できます。" }
       : oauthResult === "error"
         ? { kind: "warning", text: oauthReason || "Google接続を完了できませんでした。" }
         : null,
@@ -1546,13 +1592,13 @@ function AppShell({ onBack }: { onBack: () => void }) {
 
           {view === "connections" ? (
             <section className="app-view connections-view">
-              <div className="app-view-heading"><div><span>CONNECTIONS</span><h1>Googleとつなぐ</h1><p>1回のGoogle認証で、Gmailの読取とGoogle Sheetsへの書込をまとめて許可します。</p></div></div>
+              <div className="app-view-heading"><div><span>GOOGLE ACCESS</span><h1>Google連携</h1><p>{auth?.connected ? "ログイン時にGmailの読取とGoogle Sheetsへの書込を許可済みです。ここから利用設定へ進めます。" : "Googleログインと同時に、Gmailの読取とGoogle Sheetsへの書込をまとめて許可します。"}</p></div></div>
               <section className="connection-onboarding" aria-labelledby="connection-guide-title">
-                <div className="connection-onboarding__heading"><small>FOR FIRST-TIME USERS</small><h2 id="connection-guide-title">はじめるまで、3ステップ。</h2><p>GoogleのパスワードをMAILSHEETへ入力する操作はありません。</p></div>
+                <div className="connection-onboarding__heading"><small>FOR FIRST-TIME USERS</small><h2 id="connection-guide-title">ログイン後は、あと2ステップ。</h2><p>GoogleログインでGmailとSheetsの権限確認まで完了します。</p></div>
                 <ol>
-                  <li><span>01</span><div><strong>「Googleで接続」を押す</strong><p>使いたいGoogleアカウントを選び、Googleの確認画面で権限を許可します。</p></div></li>
-                  <li><span>02</span><div><strong>Gmailの代表メールを選ぶ</strong><p>送信元と件名で検索し、注文、予約、問い合わせなど、書式の決まったメールを1通選びます。</p></div></li>
-                  <li><span>03</span><div><strong>取り出す項目と列を決める</strong><p>項目名は自由入力です。必要な数だけ追加し、Spreadsheetの出力列へ対応させます。</p></div></li>
+                  <li><span>✓</span><div><strong>Googleログイン・権限確認</strong><p>{auth?.connected ? `${auth.googleEmail} で完了しています。` : "使うGoogleアカウントを選び、GmailとSheetsの権限を確認します。"}</p></div></li>
+                  <li><span>01</span><div><strong>Gmailの代表メールを選ぶ</strong><p>送信元や件名で検索し、書式の決まったメールを1通選びます。</p></div></li>
+                  <li><span>02</span><div><strong>取り出す項目と列を決める</strong><p>必要な項目を追加し、Spreadsheetの出力列へ対応させます。</p></div></li>
                 </ol>
                 <p className="connection-onboarding__note"><Icon name="check" size={15} /> 設定するのは初回だけ。転記を使う担当者が、実際のメールを見ながら確認する方式です。</p>
               </section>
@@ -1572,7 +1618,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
               ) : null}
               <section className={auth?.connected ? "google-connection-panel is-connected" : "google-connection-panel"}>
                 <div className="google-connection-panel__head">
-                  <div><small>ONE GOOGLE CONNECTION</small><h2>GmailとGoogle Sheetsをまとめて接続</h2><p>1回のGoogle認証で、メールの読取とGoogleスプレッドシートへの書込をまとめて許可します。</p></div>
+                  <div><small>ONE GOOGLE LOGIN</small><h2>{auth?.connected ? "Gmail・Google Sheetsを利用できます" : "Googleログインでまとめて許可"}</h2><p>{auth?.connected ? "同じGoogleアカウントで、メール検索と指定シートへの書込を行います。" : "ログイン時の確認画面で、メールの読取とシートへの書込を許可します。"}</p></div>
                   <span className="google-connection-status"><i />{auth?.connected ? `${auth.googleEmail} 接続済み` : auth ? "未接続" : "接続状態を確認中"}</span>
                 </div>
                 <div className="google-connection-services">
@@ -1581,7 +1627,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
                   <article><span className="connection-card__icon connection-card__icon--sheet"><Icon name="sheet" size={29} /></span><div><small>OUTPUT</small><h3>Google Sheets</h3><p>指定したSpreadsheetの見出しを読み、抽出した値を書き込みます。</p><ul><li><Icon name="check" size={15} /> 既存シートを使用</li><li><Icon name="check" size={15} /> テスト書込で確認</li></ul></div></article>
                 </div>
                 <div className="google-connection-actions">
-                  <button className="button button--blue" type="button" onClick={auth?.connected ? () => setView("rules") : startGoogleConnection}>{auth?.connected ? "抽出ルールを設定" : "Googleアカウントを接続"} <Icon name="arrow" size={17} /></button>
+                  <button className="button button--blue" type="button" onClick={auth?.connected ? () => setView("rules") : startGoogleConnection}>{auth?.connected ? "転記ルールを設定" : "Googleでログイン"} <Icon name="arrow" size={17} /></button>
                   {auth?.connected ? <button className="connection-disconnect" type="button" onClick={disconnectGoogle}>Google接続を解除</button> : <small>Googleの確認画面へ移動します</small>}
                 </div>
               </section>
@@ -1628,6 +1674,8 @@ function AppShell({ onBack }: { onBack: () => void }) {
                 <section className="admin-panel system-panel"><small>SYSTEM STATUS</small><h2>連携状態</h2><ul><li><span>OAuth設定</span><strong>{adminData?.system.oauthConfigured ? "正常" : "未設定"}</strong></li><li><span>Gmail受信通知</span><strong>{adminData?.system.gmailPushConfigured ? "有効" : "未設定"}</strong></li><li><span>データベース</span><strong>{adminData?.system.databaseConfigured ? "正常" : "未設定"}</strong></li><li><span>今月のwatch更新</span><strong>{adminData?.metrics.watchRenewals ?? 0}回</strong></li></ul></section>
               </div>
               <section className="admin-panel"><div className="admin-panel__heading"><div><small>ACCESS LOG</small><h2>最近のアクセス</h2></div></div><div className="access-log">{adminData?.accessHistory.length ? adminData.accessHistory.slice(0, 30).map((event, index) => <div key={`${event.email}-${event.created_at}-${index}`}><strong>{event.email}</strong><span>{formatAdminDate(event.created_at)}</span></div>) : <p>アクセス履歴はまだありません。</p>}</div></section>
+              <section className="admin-panel"><div className="admin-panel__heading"><div><small>PUBLIC TRAFFIC</small><h2>公開LPの閲覧</h2><p>IPアドレスを保存せず、匿名IDで集計しています。</p></div><div className="traffic-summary"><span>今日 <strong>{adminData?.publicTraffic.todayViews ?? 0}</strong></span><span>7日間 <strong>{adminData?.publicTraffic.sevenDayViews ?? 0}</strong></span><span>閲覧者 <strong>{adminData?.publicTraffic.sevenDayVisitors ?? 0}</strong></span></div></div><div className="access-log">{adminData?.publicTraffic.recent.length ? adminData.publicTraffic.recent.slice(0, 40).map((event, index) => <div key={`${event.visitor_id}-${event.created_at}-${index}`}><strong>{event.path} <small>{event.device === "mobile" ? "スマホ" : "PC"}{event.referrer_host ? ` / ${event.referrer_host}` : " / 直接アクセス"}</small></strong><span>{formatAdminDate(event.created_at)}</span></div>) : <p>公開ページのアクセス履歴はまだありません。</p>}</div></section>
+              <section className="admin-panel"><div className="admin-panel__heading"><div><small>REQUESTS</small><h2>要望・お困りごと</h2></div><span>{adminData?.feedback.length ?? 0}件</span></div><div className="feedback-admin-list">{adminData?.feedback.length ? adminData.feedback.map((item) => <article key={item.id}><header><span>{item.category}</span><time>{formatAdminDate(item.created_at)}</time></header><strong>{item.pain}</strong>{item.current_process ? <p><b>現在：</b>{item.current_process}</p> : null}{item.desired_outcome ? <p><b>希望：</b>{item.desired_outcome}</p> : null}{item.contact_email ? <a href={`mailto:${item.contact_email}`}>{item.contact_email}</a> : <small>返信先なし</small>}</article>) : <p>要望はまだ届いていません。</p>}</div></section>
             </section>
           ) : null}
           </> : null}
