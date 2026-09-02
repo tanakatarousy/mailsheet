@@ -1295,7 +1295,9 @@ function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
 
 type LegalKind = "privacy" | "terms";
 
-const SUPPORT_EMAIL = import.meta.env.VITE_SUPPORT_EMAIL || "support@example.com";\n\nconst privacySections = [
+const SUPPORT_EMAIL = import.meta.env.VITE_SUPPORT_EMAIL || "support@example.com";
+
+const privacySections = [
   { title: "1. 取得する情報", body: <>本サービスは、Google OAuth 2.0による認証に伴い、Googleアカウントのメールアドレス、認証に必要なアクセストークンおよびリフレッシュトークンを取得します。また、利用者が設定した対象メール条件、抽出ルール、Google Sheetsの列対応、処理日時・成否などの履歴を取り扱います。</> },
   { title: "2. Gmailデータの取り扱い", body: <>利用者が指定した条件に合うメールの検索、抽出ルールの作成および実行に必要な範囲で、Gmailのメール本文・送信元・件名等を読み取ります。Gmailは読取専用権限を使用します。現在の仕様では、メール本文および抽出した値を継続保存せず、プレビューと処理のために一時的に利用します。</> },
   { title: "3. Google Sheetsデータの取り扱い", body: <>利用者が指定したSpreadsheetとSheetの見出しを読み取り、利用者が設定・確認した列へ抽出結果を書き込むために使用します。本サービスが利用者の操作と無関係なSpreadsheetへ書き込むことはありません。</> },
