@@ -26,6 +26,14 @@ import {
 type AppView = "dashboard" | "connections" | "rules" | "history" | "settings" | "guide" | "feedback" | "admin";
 
 const errorText = (error: unknown) => error instanceof ApiError ? error.message : "処理に失敗しました。もう一度お試しください。";
+const resolveMappedSheetColumn = (headers: SheetInfo["headers"], mappedValue: unknown) => {
+  const value = String(mappedValue || "").trim();
+  if (!value) return "";
+  const columnToken = value.match(/^([A-Z]{1,5})列?$/i)?.[1]?.toUpperCase() || "";
+  const outputHeaders = headers.slice(2);
+  if (columnToken && outputHeaders.some((header) => header.column === columnToken)) return columnToken;
+  return outputHeaders.find((header) => header.label === value)?.column || "";
+};
 const formatAdminDate = (value?: string | number) => {
   if (!value) return "—";
   const date = new Date(typeof value === "number" ? value : value);
@@ -850,8 +858,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       setSheetName(info.sheetName);
       rememberInput("spreadsheet", enteredSpreadsheet || info.spreadsheetId, `${info.spreadsheetName} / ${info.sheetName}`);
       setMappings((current) => Object.fromEntries(rulesRef.current.map((rule, index) => {
-        const exact = info.headers.find((header) => header.label === rule.name)?.label;
-        return [rule.id, exact || current[rule.id] || info.headers[index + 2]?.label || ""];
+        const currentColumn = resolveMappedSheetColumn(info.headers, current[rule.id]);
+        const matchingColumn = info.headers.slice(2).find((header) => header.label === rule.name)?.column;
+        return [rule.id, currentColumn || matchingColumn || info.headers[index + 2]?.column || ""];
       })));
       setSheetConnection({ state: "connected", message: `接続済み：${info.spreadsheetName} / ${info.sheetName}` });
       if (!quiet) setNotice({ kind: "success", text: `「${info.spreadsheetName} / ${info.sheetName}」へ接続できました。` });
@@ -878,7 +887,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       fieldNames: rules.map((rule) => rule.name),
     });
     const info: SheetInfo = response;
-    const nextMappings = Object.fromEntries(rules.map((rule, index) => [rule.id, info.headers[index + 2]?.label || ""]));
+    const nextMappings = Object.fromEntries(rules.map((rule, index) => [rule.id, info.headers[index + 2]?.column || ""]));
     setSheetInfo(info);
     setMappings(nextMappings);
     setSheetConnection({ state: "connected", message: `接続済み：${info.spreadsheetName} / ${info.sheetName}` });
@@ -900,8 +909,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
 
   const sheetMappingsAreReady = (info: SheetInfo | null, currentMappings: Record<number, string>) => {
     if (!info || info.headers[0]?.label !== "転記日時" || info.headers[1]?.label !== "転記ルール") return false;
-    const outputHeaders = new Set(info.headers.slice(2).map((header) => header.label).filter(Boolean));
-    return rules.length > 0 && rules.every((rule) => outputHeaders.has(String(currentMappings[rule.id] || "").trim()));
+    return rules.length > 0 && rules.every((rule) => Boolean(resolveMappedSheetColumn(info.headers, currentMappings[rule.id])));
   };
 
   const saveRule = async (activeOverride = autoAdd) => {
@@ -926,6 +934,13 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         const configured = await writeSheetHeaders();
         effectiveSheetInfo = configured.info;
         effectiveMappings = configured.mappings;
+      }
+      if (effectiveSheetInfo) {
+        effectiveMappings = Object.fromEntries(rules.map((rule) => [
+          rule.id,
+          resolveMappedSheetColumn(effectiveSheetInfo!.headers, effectiveMappings[rule.id]),
+        ]));
+        setMappings(effectiveMappings);
       }
       const response = await postJson<{ ok: true; rule: SavedRule; gmailWatchExpiresAt?: number | null }>("/api/rules", {
         id: ruleId,
@@ -1016,7 +1031,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setNotice(null);
     try {
       const values = sheetInfo?.headers.length
-        ? sheetInfo.headers.slice(2).map((header) => results.find(({ rule }) => mappings[rule.id] === header.label)?.value || "")
+        ? sheetInfo.headers.slice(2).map((header) => results.find(({ rule }) => resolveMappedSheetColumn(sheetInfo.headers, mappings[rule.id]) === header.column)?.value || "")
         : results.map((item) => item.value);
       const response = await postJson<{ ok: true; updatedRange: string }>("/api/sheets/test", {
         ruleId,
@@ -1058,7 +1073,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   };
 
   const mappingOptions = sheetInfo?.headers.length
-    ? sheetInfo.headers.slice(2).map((header) => ({ value: header.label, label: `${header.column}列：${header.label}` }))
+    ? sheetInfo.headers.slice(2).map((header) => ({ value: header.column, label: `${header.column}列：${header.label}` }))
     : embedded
       ? ["C", "D", "E", "F", "G", "H"].map((column) => ({ value: `${column}列`, label: `${column}列` }))
       : [{ value: "", label: "見出し取得後に選択" }];

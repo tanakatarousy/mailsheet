@@ -793,6 +793,15 @@ function columnName(index) {
   return name;
 }
 
+function resolveMappedSheetColumn(headers, mappedValue) {
+  const value = String(mappedValue || "").trim();
+  if (!value) return "";
+  const columnToken = value.match(/^([A-Z]{1,5})列?$/i)?.[1]?.toUpperCase() || "";
+  if (columnToken && headers.some((header) => header.column === columnToken)) return columnToken;
+  // 旧ルールは見出し名を保存していたため、同名見出しが複数ある場合は最初の1列だけへ移行する。
+  return headers.find((header) => header.label === value)?.column || "";
+}
+
 async function inspectSheet(env, userId, inputId, requestedSheetName) {
   const id = spreadsheetId(inputId);
   const metadataResponse = await googleFetch(
@@ -1018,10 +1027,10 @@ async function handleRuleSave(request, env) {
   if (body.active && (!body.spreadsheetId || !body.sheetName)) {
     throw new HttpError(400, "新着メールの自動転記をONにするには、SpreadsheetとSheetを設定してください。", "sheet_not_configured");
   }
-  const outputHeaders = new Set(body.sheetHeaders.slice(2).map((header) => String(header.label || "").trim()).filter(Boolean));
+  const outputHeaders = body.sheetHeaders.slice(2);
   const hasMissingMapping = body.fields.some((field) => {
     const mappedHeader = String(body.mappings[String(field.id)] || "").trim();
-    return !mappedHeader || !outputHeaders.has(mappedHeader);
+    return !resolveMappedSheetColumn(outputHeaders, mappedHeader);
   });
   if (body.active && (!body.sheetHeaders.length || hasMissingMapping)) {
     throw new HttpError(400, "新着メールの自動転記をONにするには、1行目の見出しを取得し、すべての取得項目に出力列を割り当ててください。", "mapping_incomplete");
@@ -1292,8 +1301,9 @@ async function processSavedRule(env, userId, rule, options = {}) {
       let status = "review";
       let errorMessage = missing.length ? `${missing.map((item) => item.field.name).join("、")}を抽出できませんでした` : "";
       if (!missing.length) {
-        const row = [sheetTimestamp(), rule.name, ...sheet.headers.slice(2).map((header) => {
-          const match = extracted.find((item) => rule.mappings[String(item.field.id)] === header.label);
+        const outputHeaders = sheet.headers.slice(2);
+        const row = [sheetTimestamp(), rule.name, ...outputHeaders.map((header) => {
+          const match = extracted.find((item) => resolveMappedSheetColumn(outputHeaders, rule.mappings[String(item.field.id)]) === header.column);
           return match?.value || "";
         })];
         if (!row.slice(2).some(Boolean)) {

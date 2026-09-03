@@ -368,7 +368,13 @@ test("saves current sheet mappings when enabling a rule and guides the next acti
   assert.match(page, /!sheetMappingsAreReady\(sheetInfo, mappings\)/);
   assert.match(worker, /\/api\/sheets\/headers/);
   assert.match(worker, /const headings = \["転記日時", "転記ルール", \.\.\.fieldNames\]/);
-  assert.match(worker, /const outputHeaders = new Set\(body\.sheetHeaders\.slice\(2\)/);
+  assert.match(page, /value: header\.column, label: `\$\{header\.column\}列：\$\{header\.label\}`/);
+  assert.match(page, /resolveMappedSheetColumn\(sheetInfo\.headers, mappings\[rule\.id\]\) === header\.column/);
+  assert.match(worker, /function resolveMappedSheetColumn\(headers, mappedValue\)/);
+  assert.match(worker, /return headers\.find\(\(header\) => header\.label === value\)\?\.column \|\| ""/);
+  assert.match(worker, /resolveMappedSheetColumn\(outputHeaders, mappedHeader\)/);
+  assert.match(worker, /resolveMappedSheetColumn\(outputHeaders, rule\.mappings\[String\(item\.field\.id\)\]\) === header\.column/);
+  assert.doesNotMatch(worker, /rule\.mappings\[String\(item\.field\.id\)\] === header\.label/);
 });
 
 test("supports ten saved rules, three active rules, and traceable automatic processing", async () => {
@@ -399,7 +405,7 @@ test("supports ten saved rules, three active rules, and traceable automatic proc
   assert.match(worker, /handleAdminPendingInvite/);
   assert.match(worker, /\/api\/admin\/invite\/manage/);
   assert.match(page, />監視開始<\/button>/);
-  assert.match(worker, /const row = \[sheetTimestamp\(\), rule\.name, \.\.\.sheet\.headers\.slice\(2\)/);
+  assert.match(worker, /const row = \[sheetTimestamp\(\), rule\.name, \.\.\.outputHeaders\.map/);
 });
 
 test("serves client routes without redirecting them to the landing page", async () => {
