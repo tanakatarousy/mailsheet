@@ -6,6 +6,7 @@ import {
   type AuthStatus,
   type AdminOverview,
   type DashboardData,
+  type FeedbackAttachment,
   type FeedbackItem,
   type GmailMessage,
   type HistoryRow as ApiHistoryRow,
@@ -1698,39 +1699,100 @@ function LegalPage({ kind, onBack }: { kind: LegalKind; onBack: () => void }) {
 
 const feedbackStatusLabel = (status: FeedbackItem["status"]) => status === "resolved" ? "解決済み" : status === "in_progress" ? "対応中" : "未対応";
 
-function TesterFeedback({ auth }: { auth: AuthStatus | null }) {
-  const [form, setForm] = useState({ category: "不明点", page: "転記ルール", details: "", operation: "", expected: "" });
-  const [items, setItems] = useState<FeedbackItem[]>([]);
-  const [state, setState] = useState<"loading" | "idle" | "sending" | "sent" | "error">("loading");
+type FeedbackTemplateId = "question" | "bug" | "survey";
+
+const testerFeedbackTemplates: Array<{
+  id: FeedbackTemplateId;
+  number: string;
+  label: string;
+  description: string;
+  detailsLabel: string;
+  detailsPlaceholder: string;
+  operationLabel: string;
+  operationPlaceholder: string;
+  expectedLabel: string;
+  expectedPlaceholder: string;
+}> = [
+  {
+    id: "question",
+    number: "01",
+    label: "質問・不明点",
+    description: "操作方法や設定で分からないこと",
+    detailsLabel: "知りたいこと・分からないこと",
+    detailsPlaceholder: "例：転記先の列を変更する方法が分かりません。",
+    operationLabel: "どの操作で迷ったか",
+    operationPlaceholder: "例：転記ルールを開き、出力先をつなぐところまで進みました。",
+    expectedLabel: "補足・試したこと",
+    expectedPlaceholder: "例：使い方ガイドを見ましたが、該当する説明を見つけられませんでした。",
+  },
+  {
+    id: "bug",
+    number: "02",
+    label: "不具合報告・修正依頼",
+    description: "動かない、表示がおかしい、直してほしいこと",
+    detailsLabel: "発生した問題・修正してほしいこと",
+    detailsPlaceholder: "例：新着メールを受信しても、スプレッドシートへ転記されません。",
+    operationLabel: "発生するまでの操作・再現手順",
+    operationPlaceholder: "例：転記ルールを保存 → 新着メールの自動転記をON → テストメールを受信",
+    expectedLabel: "本来どうなってほしかったか",
+    expectedPlaceholder: "例：受信したメールの内容が、シートの最終行へ1件追加される。",
+  },
+  {
+    id: "survey",
+    number: "03",
+    label: "使用感アンケート",
+    description: "使いやすさ、良かった点、改善してほしい点",
+    detailsLabel: "使ってみた感想",
+    detailsPlaceholder: "例：メールを選んで項目を作る流れは分かりやすかったです。",
+    operationLabel: "良かった点",
+    operationPlaceholder: "例：次に何をすればよいか画面内に表示される点。",
+    expectedLabel: "改善してほしい点",
+    expectedPlaceholder: "例：列の割り当て方法を、もう少し大きく表示してほしいです。",
+  },
+];
+
+const formatAttachmentSize = (size: number) => size >= 1_048_576 ? `${(size / 1_048_576).toFixed(1)} MB` : `${Math.max(1, Math.ceil(size / 1024))} KB`;
+
+function TesterFeedback() {
+  const [form, setForm] = useState({ template: "question" as FeedbackTemplateId, page: "転記ルール", details: "", operation: "", expected: "", rating: "" });
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [message, setMessage] = useState("");
+  const attachmentInput = useRef<HTMLInputElement>(null);
+  const template = testerFeedbackTemplates.find((item) => item.id === form.template) || testerFeedbackTemplates[0];
 
-  const loadFeedback = useCallback(async () => {
-    try {
-      const response = await apiFetch<{ ok: true; feedback: FeedbackItem[] }>("/api/feedback");
-      setItems(response.feedback);
-      setState("idle");
-    } catch (error) {
-      setMessage(errorText(error));
+  const selectAttachments = (files: FileList | null) => {
+    const selected = Array.from(files || []);
+    if (selected.length > 3) {
+      setMessage("添付できるファイルは3件までです。");
       setState("error");
+      return;
     }
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => { void loadFeedback(); }, 0);
-    return () => window.clearTimeout(timer);
-  }, [loadFeedback]);
+    const tooLarge = selected.find((file) => file.size > 25 * 1024 * 1024);
+    if (tooLarge || selected.reduce((sum, file) => sum + file.size, 0) > 50 * 1024 * 1024) {
+      setMessage("添付は1件25MBまで、合計50MBまでです。");
+      setState("error");
+      return;
+    }
+    setAttachments(selected);
+    setMessage("");
+    setState("idle");
+  };
 
   const submitFeedback = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setState("sending");
     setMessage("");
     try {
-      await postJson<{ ok: true }>("/api/feedback", form);
-      setForm((current) => ({ ...current, details: "", operation: "", expected: "" }));
-      setMessage("投稿しました。管理者が内容を確認すると、下の履歴で対応状況を確認できます。");
+      const body = new FormData();
+      Object.entries(form).forEach(([key, value]) => body.append(key, value));
+      attachments.forEach((file) => body.append("attachments", file, file.name));
+      await apiFetch<{ ok: true; id: number; attachmentCount: number }>("/api/feedback", { method: "POST", body });
+      setForm((current) => ({ ...current, details: "", operation: "", expected: "", rating: "" }));
+      setAttachments([]);
+      if (attachmentInput.current) attachmentInput.current.value = "";
+      setMessage("投稿しました。内容と添付ファイルを管理者へ送りました。");
       setState("sent");
-      const response = await apiFetch<{ ok: true; feedback: FeedbackItem[] }>("/api/feedback");
-      setItems(response.feedback);
     } catch (error) {
       setMessage(errorText(error));
       setState("error");
@@ -1739,18 +1801,19 @@ function TesterFeedback({ auth }: { auth: AuthStatus | null }) {
 
   return (
     <section className="app-view tester-feedback-view">
-      <div className="app-view-heading"><div><span>TESTER FEEDBACK</span><h1>不明点・問題を投稿</h1><p>操作方法の質問、分かりにくかった点、不具合、改善要望を管理者へ送れます。</p></div></div>
+      <div className="app-view-heading"><div><span>TESTER FEEDBACK</span><h1>質問・不具合・使用感を投稿</h1><p>内容に合う種類を選ぶと、入力しやすい質問へ切り替わります。</p></div></div>
       <div className="tester-feedback-layout">
         <form className="tester-feedback-form" onSubmit={submitFeedback}>
-          <div className="tester-feedback-form__heading"><small>NEW POST</small><h2>気づいたことを教えてください</h2><p>詳しい原因が分からなくても大丈夫です。どの画面で何をしたかだけでも、調査の手掛かりになります。</p></div>
-          <div className="tester-feedback-row">
-            <label><span>投稿の種類 <b>必須</b></span><select value={form.category} onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}><option>不明点</option><option>不具合</option><option>質問・相談</option><option>改善要望</option></select></label>
-            <label><span>対象の画面</span><select value={form.page} onChange={(event) => setForm((current) => ({ ...current, page: event.target.value }))}><option>Google接続</option><option>転記ルール</option><option>処理履歴</option><option>設定</option><option>使い方ガイド</option><option>ログイン</option><option>その他</option></select></label>
-          </div>
-          <label><span>内容 <b>必須</b></span><textarea value={form.details} onChange={(event) => setForm((current) => ({ ...current, details: event.target.value }))} placeholder="例：自動転記ONにしましたが、新しいメールを受信してもシートに追加されません。" required minLength={5} rows={5} /></label>
-          <label><span>直前に行った操作 <small>任意</small></span><textarea value={form.operation} onChange={(event) => setForm((current) => ({ ...current, operation: event.target.value }))} placeholder="例：転記ルールを保存 → 自動転記ON → テストメールを受信" rows={3} /></label>
-          <label><span>期待していた結果 <small>任意</small></span><textarea value={form.expected} onChange={(event) => setForm((current) => ({ ...current, expected: event.target.value }))} placeholder="例：受信したメールがシートの最終行に1件追加される" rows={3} /></label>
-          <div className="tester-feedback-submit"><div><strong>{auth?.appUser.email || auth?.googleEmail || "ログイン中の利用者"}</strong><small>このメールアドレスと投稿内容を管理者が確認します。</small></div><button className="button button--blue" type="submit" disabled={state === "sending" || form.details.trim().length < 5}>{state === "sending" ? "送信中…" : "管理者へ投稿"} <Icon name="arrow" size={16} /></button></div>
+          <div className="tester-feedback-form__heading"><small>CHOOSE A TEMPLATE</small><h2>投稿内容を選んでください</h2><p>選んだ内容に合わせて入力欄が切り替わります。詳しい原因が分からなくても、そのまま書いて大丈夫です。</p></div>
+          <div className="tester-feedback-tabs" role="tablist" aria-label="投稿内容の種類">{testerFeedbackTemplates.map((item) => <button type="button" role="tab" aria-selected={form.template === item.id} className={form.template === item.id ? "is-active" : ""} key={item.id} onClick={() => { setForm((current) => ({ ...current, template: item.id, rating: "" })); setMessage(""); setState("idle"); }}><span>{item.number}</span><strong>{item.label}</strong><small>{item.description}</small></button>)}</div>
+          <div className="tester-feedback-template-heading"><span>{template.number}</span><div><small>SELECTED TEMPLATE</small><h3>{template.label}</h3></div></div>
+          <label><span>対象の画面 <small>任意</small></span><select value={form.page} onChange={(event) => setForm((current) => ({ ...current, page: event.target.value }))}><option>Google接続</option><option>転記ルール</option><option>処理履歴</option><option>設定</option><option>使い方ガイド</option><option>ログイン</option><option>アプリ全体</option><option>その他</option></select></label>
+          {form.template === "survey" ? <fieldset className="tester-feedback-rating"><legend>全体の使いやすさ <small>任意</small></legend><div>{[1, 2, 3, 4, 5].map((score) => <button type="button" key={score} className={form.rating === String(score) ? "is-active" : ""} aria-pressed={form.rating === String(score)} onClick={() => setForm((current) => ({ ...current, rating: String(score) }))}><strong>{score}</strong><span>{score === 1 ? "使いにくい" : score === 5 ? "使いやすい" : ""}</span></button>)}</div></fieldset> : null}
+          <label><span>{template.detailsLabel} <b>必須</b></span><textarea value={form.details} onChange={(event) => setForm((current) => ({ ...current, details: event.target.value }))} placeholder={template.detailsPlaceholder} required minLength={5} rows={5} /></label>
+          <label><span>{template.operationLabel} <small>任意</small></span><textarea value={form.operation} onChange={(event) => setForm((current) => ({ ...current, operation: event.target.value }))} placeholder={template.operationPlaceholder} rows={3} /></label>
+          <label><span>{template.expectedLabel} <small>任意</small></span><textarea value={form.expected} onChange={(event) => setForm((current) => ({ ...current, expected: event.target.value }))} placeholder={template.expectedPlaceholder} rows={3} /></label>
+          <fieldset className="tester-feedback-attachments"><legend>画像・動画を添付 <small>任意</small></legend><button type="button" onClick={() => attachmentInput.current?.click()}><Icon name="plus" size={18} /><span><strong>スクリーンショット・動画を選択</strong><small>JPEG・PNG・WebP・GIF・HEIC・MP4・MOV・WebM／3件まで</small></span></button><input ref={attachmentInput} type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,video/mp4,video/quicktime,video/webm" multiple onChange={(event) => selectAttachments(event.target.files)} />{attachments.length ? <ul>{attachments.map((file, index) => <li key={`${file.name}-${file.size}-${index}`}><span><strong>{file.name}</strong><small>{formatAttachmentSize(file.size)}</small></span><button type="button" aria-label={`${file.name}を外す`} onClick={() => { const next = attachments.filter((_, fileIndex) => fileIndex !== index); setAttachments(next); if (!next.length && attachmentInput.current) attachmentInput.current.value = ""; }}>外す</button></li>)}</ul> : null}<p>氏名・電話番号などの個人情報は、可能な範囲で伏せてください。1件25MB、合計50MBまでです。</p></fieldset>
+          <div className="tester-feedback-submit"><button className="button button--blue" type="submit" disabled={state === "sending" || form.details.trim().length < 5}>{state === "sending" ? "送信中…" : "管理者へ投稿"} <Icon name="arrow" size={16} /></button></div>
           {message ? <p className={state === "sent" ? "tester-feedback-message is-success" : "tester-feedback-message is-error"} role="status">{message}</p> : null}
         </form>
 
@@ -1760,13 +1823,33 @@ function TesterFeedback({ auth }: { auth: AuthStatus | null }) {
           <p>メール本文やSpreadsheetに個人情報が含まれる場合は、氏名・電話番号などを伏せて投稿してください。</p>
         </aside>
       </div>
-
-      <section className="tester-feedback-history">
-        <div className="tester-feedback-history__heading"><div><small>MY POSTS</small><h2>自分の投稿履歴</h2><p>管理者側で変更された対応状況が表示されます。</p></div><button type="button" onClick={() => void loadFeedback()}>再読み込み</button></div>
-        {state === "loading" ? <p className="tester-feedback-empty">読み込み中…</p> : items.length ? <div className="tester-feedback-list">{items.map((item) => <article key={item.id}><header><div><span>{item.category}</span><strong className={`feedback-status is-${item.status}`}>{feedbackStatusLabel(item.status)}</strong></div><time>{formatAdminDate(item.created_at)}</time></header><p>{item.pain}</p>{item.current_process ? <small>{item.current_process}</small> : null}{item.desired_outcome ? <small><b>期待：</b>{item.desired_outcome}</small> : null}</article>)}</div> : <p className="tester-feedback-empty">投稿はまだありません。不明点があれば、上のフォームからそのまま送ってください。</p>}
-      </section>
     </section>
   );
+}
+
+function AdminFeedbackAttachments({ feedbackId }: { feedbackId: number }) {
+  const [attachments, setAttachments] = useState<FeedbackAttachment[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+
+  const load = async () => {
+    if (attachments) {
+      setAttachments(null);
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const response = await apiFetch<{ ok: true; attachments: FeedbackAttachment[] }>(`/api/admin/feedback/${feedbackId}/attachments`);
+      setAttachments(response.attachments);
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return <div className="admin-feedback-attachments"><button type="button" onClick={() => void load()} disabled={loading}>{loading ? "確認中…" : attachments ? "添付を閉じる" : "画像・動画を確認"}</button>{message ? <p>{message}</p> : null}{attachments ? attachments.length ? <div>{attachments.map((attachment) => <figure key={attachment.key}>{attachment.contentType.startsWith("image/") ? <a href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} loading="lazy" /></a> : <video src={attachment.url} controls preload="metadata" />}<figcaption><strong>{attachment.name}</strong><span>{formatAttachmentSize(attachment.size)}</span><a href={attachment.url} target="_blank" rel="noreferrer">別画面で開く ↗</a></figcaption></figure>)}</div> : <small>添付ファイルはありません。</small> : null}</div>;
 }
 
 function GettingStartedGuide({ auth, onNavigate }: { auth: AuthStatus | null; onNavigate: (view: AppView) => void }) {
@@ -2220,7 +2303,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
 
           {view === "guide" ? <GettingStartedGuide auth={auth} onNavigate={setView} /> : null}
 
-          {view === "feedback" ? <TesterFeedback auth={auth} /> : null}
+          {view === "feedback" ? <TesterFeedback /> : null}
 
           {view === "admin" && auth?.access.role === "admin" ? (
             <section className="app-view admin-view">
@@ -2242,7 +2325,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
               <section className="admin-panel admin-feedback-panel">
                 <div className="admin-panel__heading"><div><small>TESTER FEEDBACK</small><h2>不明点・不具合・質問</h2><p>テスターと公開ページから届いた投稿を確認し、対応状況を更新できます。</p></div><div className="admin-feedback-summary"><span>未対応 <strong>{adminData?.feedback.filter((item) => item.status === "new").length ?? 0}</strong></span><span>全件 <strong>{adminData?.feedback.length ?? 0}</strong></span></div></div>
                 <div className="admin-feedback-filters" aria-label="投稿の絞り込み">{(["all", "new", "in_progress", "resolved"] as const).map((status) => <button type="button" key={status} className={adminFeedbackFilter === status ? "is-active" : ""} onClick={() => setAdminFeedbackFilter(status)}>{status === "all" ? "すべて" : feedbackStatusLabel(status)}</button>)}</div>
-                <div className="feedback-admin-list">{adminData?.feedback.length ? adminData.feedback.filter((item) => adminFeedbackFilter === "all" || item.status === adminFeedbackFilter).map((item) => <article className={item.visitor_id.startsWith("app:") ? "is-tester-post" : ""} key={item.id}><header><div><span>{item.category}</span><strong className={`feedback-status is-${item.status}`}>{feedbackStatusLabel(item.status)}</strong>{item.visitor_id.startsWith("app:") ? <em>テスター</em> : <em>公開ページ</em>}</div><time>#{item.id}・{formatAdminDate(item.created_at)}</time></header><strong>{item.pain}</strong>{item.current_process ? <p className="feedback-context">{item.current_process}</p> : null}{item.desired_outcome ? <p><b>期待・希望：</b>{item.desired_outcome}</p> : null}<footer>{item.contact_email ? <a href={`mailto:${item.contact_email}`}>{item.contact_email}</a> : <small>返信先なし</small>}<div>{(["new", "in_progress", "resolved"] as const).map((status) => <button type="button" key={status} className={item.status === status ? "is-active" : ""} onClick={() => void changeFeedbackStatus(item.id, status)}>{feedbackStatusLabel(status)}</button>)}</div></footer></article>) : <p>投稿はまだ届いていません。</p>}</div>
+                <div className="feedback-admin-list">{adminData?.feedback.length ? adminData.feedback.filter((item) => adminFeedbackFilter === "all" || item.status === adminFeedbackFilter).map((item) => <article className={item.visitor_id.startsWith("app:") ? "is-tester-post" : ""} key={item.id}><header><div><span>{item.category}</span><strong className={`feedback-status is-${item.status}`}>{feedbackStatusLabel(item.status)}</strong>{item.visitor_id.startsWith("app:") ? <em>テスター</em> : <em>公開ページ</em>}</div><time>#{item.id}・{formatAdminDate(item.created_at)}</time></header><strong>{item.pain}</strong>{item.current_process ? <p className="feedback-context">{item.current_process}</p> : null}{item.desired_outcome ? <p><b>期待・希望：</b>{item.desired_outcome}</p> : null}{item.visitor_id.startsWith("app:") ? <AdminFeedbackAttachments feedbackId={item.id} /> : null}<footer>{item.contact_email ? <a href={`mailto:${item.contact_email}`}>{item.contact_email}</a> : <small>返信先なし</small>}<div>{(["new", "in_progress", "resolved"] as const).map((status) => <button type="button" key={status} className={item.status === status ? "is-active" : ""} onClick={() => void changeFeedbackStatus(item.id, status)}>{feedbackStatusLabel(status)}</button>)}</div></footer></article>) : <p>投稿はまだ届いていません。</p>}</div>
               </section>
             </section>
           ) : null}

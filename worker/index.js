@@ -1573,43 +1573,148 @@ async function handleFeedbackSubmit(request, env) {
   return json({ ok: true });
 }
 
-const TESTER_FEEDBACK_CATEGORIES = new Set(["不明点", "不具合", "質問・相談", "改善要望"]);
+const TESTER_FEEDBACK_TEMPLATES = {
+  question: { category: "質問・不明点", operationLabel: "迷った操作", expectedLabel: "補足・試したこと" },
+  bug: { category: "不具合報告・修正依頼", operationLabel: "再現手順", expectedLabel: "本来の想定" },
+  survey: { category: "使用感アンケート", operationLabel: "良かった点", expectedLabel: "改善してほしい点" },
+};
+const FEEDBACK_ATTACHMENT_TYPES = new Set([
+  "image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif",
+  "video/mp4", "video/quicktime", "video/webm",
+]);
+const MAX_FEEDBACK_ATTACHMENTS = 3;
+const MAX_FEEDBACK_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_FEEDBACK_TOTAL_BYTES = 50 * 1024 * 1024;
 
-async function handleUserFeedbackList(request, env) {
-  const user = await requireAuthorizedUser(request, env);
-  const ownerId = `app:${user.id}`;
-  const result = await requireDb(env).prepare(
-    "SELECT id, visitor_id, category, pain, current_process, desired_outcome, contact_email, status, created_at FROM feedback_requests WHERE visitor_id = ? ORDER BY created_at DESC LIMIT 30",
-  ).bind(ownerId).all();
-  return json({ ok: true, feedback: result.results || [] });
+function feedbackAttachmentName(value) {
+  return String(value || "attachment").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 180) || "attachment";
+}
+
+function feedbackAttachmentContentType(file) {
+  const stated = String(file?.type || "").toLowerCase();
+  if (FEEDBACK_ATTACHMENT_TYPES.has(stated)) return stated;
+  const extension = feedbackAttachmentName(file?.name).split(".").pop()?.toLowerCase();
+  return ({ jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif", heic: "image/heic", heif: "image/heif", mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm" })[extension] || "";
+}
+
+function decodeFeedbackAttachmentName(value) {
+  try { return new TextDecoder().decode(base64UrlToBytes(String(value || ""))); } catch { return "添付ファイル"; }
 }
 
 async function handleUserFeedbackSubmit(request, env) {
   const user = await requireAuthorizedUser(request, env);
   assertSameOrigin(request);
-  const body = await readJson(request, 20_000);
-  const category = String(body.category || "").trim();
+  const isMultipart = String(request.headers.get("content-type") || "").toLowerCase().startsWith("multipart/form-data");
+  const formData = isMultipart ? await request.formData() : null;
+  const body = formData ? Object.fromEntries([...formData.entries()].filter(([, value]) => typeof value === "string")) : await readJson(request, 20_000);
+  const files = formData ? formData.getAll("attachments").filter((value) => typeof value !== "string") : [];
+  const templateId = String(body.template || "question").trim();
+  const template = TESTER_FEEDBACK_TEMPLATES[templateId];
   const page = String(body.page || "").trim().slice(0, 100);
   const operation = String(body.operation || "").trim().slice(0, 1_500);
   const details = String(body.details || "").trim().slice(0, 3_000);
   const expected = String(body.expected || "").trim().slice(0, 1_500);
-  if (!TESTER_FEEDBACK_CATEGORIES.has(category)) {
+  const rating = String(body.rating || "").trim();
+  if (!template) {
     throw new HttpError(400, "投稿の種類を選択してください。", "invalid_feedback_category");
   }
   if (details.length < 5) {
     throw new HttpError(400, "内容を5文字以上で入力してください。", "invalid_feedback_details");
   }
+  if (rating && (templateId !== "survey" || !["1", "2", "3", "4", "5"].includes(rating))) {
+    throw new HttpError(400, "使いやすさの評価を確認してください。", "invalid_feedback_rating");
+  }
+  if (files.length > MAX_FEEDBACK_ATTACHMENTS) {
+    throw new HttpError(400, `添付できるファイルは${MAX_FEEDBACK_ATTACHMENTS}件までです。`, "too_many_attachments");
+  }
+  let totalBytes = 0;
+  const checkedFiles = files.map((file) => {
+    const contentType = feedbackAttachmentContentType(file);
+    if (!contentType) throw new HttpError(400, "添付できるのはJPEG・PNG・WebP・GIF・HEIC画像、MP4・MOV・WebM動画です。", "unsupported_attachment");
+    if (!Number(file.size) || Number(file.size) > MAX_FEEDBACK_ATTACHMENT_BYTES) {
+      throw new HttpError(400, "添付は1件25MBまでです。", "attachment_too_large");
+    }
+    totalBytes += Number(file.size);
+    return { file, contentType, name: feedbackAttachmentName(file.name) };
+  });
+  if (totalBytes > MAX_FEEDBACK_TOTAL_BYTES) {
+    throw new HttpError(400, "添付の合計は50MBまでです。", "attachments_too_large");
+  }
+  if (checkedFiles.length && !env.FEEDBACK_FILES) {
+    throw new HttpError(503, "添付ファイルの保存先を準備中です。添付を外して送信するか、管理者へお知らせください。", "attachment_storage_unavailable");
+  }
   const ownerId = `app:${user.id}`;
-  const recent = await requireDb(env).prepare("SELECT COUNT(*) AS count FROM feedback_requests WHERE visitor_id = ? AND created_at >= ?")
+  const db = requireDb(env);
+  const recent = await db.prepare("SELECT COUNT(*) AS count FROM feedback_requests WHERE visitor_id = ? AND created_at >= ?")
     .bind(ownerId, new Date(Date.now() - 60 * 60_000).toISOString()).first();
   if (Number(recent?.count || 0) >= 10) {
     throw new HttpError(429, "短時間の投稿上限に達しました。時間を置いてお試しください。", "rate_limited");
   }
-  const context = [page ? `対象画面：${page}` : "", operation ? `直前の操作：${operation}` : ""].filter(Boolean).join("\n");
-  await requireDb(env).prepare(
+  const context = [page ? `対象画面：${page}` : "", rating ? `使いやすさ：${rating}/5` : "", operation ? `${template.operationLabel}：${operation}` : ""].filter(Boolean).join("\n");
+  const createdAt = new Date().toISOString();
+  const insert = await db.prepare(
     "INSERT INTO feedback_requests (visitor_id, category, pain, current_process, desired_outcome, contact_email, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'new', ?)",
-  ).bind(ownerId, category, details, context, expected, String(user.email || "").toLowerCase(), new Date().toISOString()).run();
-  return json({ ok: true });
+  ).bind(ownerId, template.category, details, context, expected ? `${template.expectedLabel}：${expected}` : "", String(user.email || "").toLowerCase(), createdAt).run();
+  const feedbackId = Number(insert.meta?.last_row_id || 0);
+  const uploadedKeys = [];
+  try {
+    if (checkedFiles.length && !feedbackId) throw new Error("Feedback ID was not returned");
+    for (const { file, contentType, name } of checkedFiles) {
+      const key = `feedback/${feedbackId}/${randomUrlSafe(18)}`;
+      await env.FEEDBACK_FILES.put(key, file.stream(), {
+        httpMetadata: { contentType },
+        customMetadata: { filenameb64: bytesToBase64Url(new TextEncoder().encode(name)), feedbackid: String(feedbackId) },
+      });
+      uploadedKeys.push(key);
+    }
+  } catch {
+    await Promise.all(uploadedKeys.map((key) => env.FEEDBACK_FILES.delete(key)));
+    await db.prepare("DELETE FROM feedback_requests WHERE id = ? AND visitor_id = ?").bind(feedbackId, ownerId).run();
+    throw new HttpError(500, "添付ファイルを保存できませんでした。時間を置いて再度お試しください。", "attachment_upload_failed");
+  }
+  return json({ ok: true, id: feedbackId, attachmentCount: checkedFiles.length });
+}
+
+async function handleAdminFeedbackAttachments(request, env, feedbackId) {
+  await requireAdmin(request, env);
+  const existing = await requireDb(env).prepare("SELECT id FROM feedback_requests WHERE id = ?").bind(feedbackId).first();
+  if (!existing) throw new HttpError(404, "投稿が見つかりません。", "feedback_not_found");
+  if (!env.FEEDBACK_FILES) throw new HttpError(503, "添付ファイルの保存先が設定されていません。", "attachment_storage_unavailable");
+  const listed = await env.FEEDBACK_FILES.list({ prefix: `feedback/${feedbackId}/`, include: ["httpMetadata", "customMetadata"] });
+  const attachments = (listed.objects || []).map((object) => ({
+    key: object.key,
+    name: decodeFeedbackAttachmentName(object.customMetadata?.filenameb64),
+    contentType: String(object.httpMetadata?.contentType || "application/octet-stream"),
+    size: Number(object.size || 0),
+    uploadedAt: object.uploaded instanceof Date ? object.uploaded.toISOString() : String(object.uploaded || ""),
+    url: `/api/admin/feedback/attachment?id=${feedbackId}&key=${encodeURIComponent(object.key)}`,
+  }));
+  return json({ ok: true, attachments });
+}
+
+async function handleAdminFeedbackAttachment(request, env) {
+  await requireAdmin(request, env);
+  if (!env.FEEDBACK_FILES) throw new HttpError(503, "添付ファイルの保存先が設定されていません。", "attachment_storage_unavailable");
+  const url = new URL(request.url);
+  const feedbackId = Number(url.searchParams.get("id"));
+  const key = String(url.searchParams.get("key") || "");
+  if (!Number.isInteger(feedbackId) || feedbackId <= 0 || !key.startsWith(`feedback/${feedbackId}/`)) {
+    throw new HttpError(400, "添付ファイルの指定を確認してください。", "invalid_attachment_key");
+  }
+  const object = await env.FEEDBACK_FILES.get(key);
+  if (!object) throw new HttpError(404, "添付ファイルが見つかりません。", "attachment_not_found");
+  const name = decodeFeedbackAttachmentName(object.customMetadata?.filenameb64);
+  const asciiName = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  const encodedName = encodeURIComponent(name).replace(/['()]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return new Response(object.body, {
+    headers: {
+      "content-type": object.httpMetadata?.contentType || "application/octet-stream",
+      "content-length": String(object.size),
+      "content-disposition": `inline; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
+      "cache-control": "private, no-store",
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 async function handleAdminOverview(request, env) {
@@ -1775,7 +1880,6 @@ async function routeApi(request, env) {
   if (method === "GET" && url.pathname === "/api/auth/status") return handleAuthStatus(request, env);
   if (method === "POST" && url.pathname === "/api/auth/disconnect") return handleDisconnect(request, env);
   if (method === "POST" && url.pathname === "/api/auth/logout") return handleLogout(request);
-  if (method === "GET" && url.pathname === "/api/feedback") return handleUserFeedbackList(request, env);
   if (method === "POST" && url.pathname === "/api/feedback") return handleUserFeedbackSubmit(request, env);
   if (method === "GET" && url.pathname === "/api/gmail/messages") return handleGmailMessages(request, env);
   if (method === "GET" && url.pathname === "/api/gmail/push/config") return handlePushConfig(request, env);
@@ -1798,6 +1902,9 @@ async function routeApi(request, env) {
   if (method === "POST" && url.pathname === "/api/admin/users/status") return handleAdminUserStatus(request, env);
   if (method === "POST" && url.pathname === "/api/admin/invite/manage") return handleAdminPendingInvite(request, env);
   if (method === "POST" && url.pathname === "/api/admin/feedback/status") return handleAdminFeedbackStatus(request, env);
+  const feedbackAttachmentsMatch = url.pathname.match(/^\/api\/admin\/feedback\/(\d+)\/attachments$/);
+  if (method === "GET" && feedbackAttachmentsMatch) return handleAdminFeedbackAttachments(request, env, Number(feedbackAttachmentsMatch[1]));
+  if (method === "GET" && url.pathname === "/api/admin/feedback/attachment") return handleAdminFeedbackAttachment(request, env);
   return apiError("APIが見つかりません。", 404, "not_found");
 }
 

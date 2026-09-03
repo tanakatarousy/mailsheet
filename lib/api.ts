@@ -57,6 +57,15 @@ export type FeedbackItem = {
   created_at: string;
 };
 
+export type FeedbackAttachment = {
+  key: string;
+  name: string;
+  contentType: string;
+  size: number;
+  uploadedAt: string;
+  url: string;
+};
+
 export type AdminOverview = {
   ok: true;
   users: AdminUser[];
@@ -144,7 +153,7 @@ type ApiFailure = { error?: { message?: string; code?: string } };
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  if (init?.body && !(init.body instanceof FormData) && !headers.has("content-type")) headers.set("content-type", "application/json");
   const response = await fetch(path, { ...init, headers, credentials: "same-origin" });
   let payload: unknown = null;
   try {
