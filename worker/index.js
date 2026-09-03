@@ -9,6 +9,8 @@ const OAUTH_SCOPES = [
 ];
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const METHODS = new Set(["after", "between", "number", "money", "date", "email", "phone", "regex"]);
+const SESSION_IDLE_SECONDS = 7 * 24 * 60 * 60;
+const SESSION_IDLE_MS = SESSION_IDLE_SECONDS * 1000;
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -216,8 +218,23 @@ function oauthCookie(value, maxAge = 600) {
   return `mailsheet_google_oauth=${value}; Path=/api/oauth/google; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
 }
 
-function sessionCookie(value, maxAge = 30 * 24 * 60 * 60) {
+function sessionCookie(value, maxAge = SESSION_IDLE_SECONDS) {
   return `mailsheet_session=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
+}
+
+async function refreshSession(request, env, response) {
+  const pathname = new URL(request.url).pathname;
+  if (!env.TOKEN_ENCRYPTION_KEY) return response;
+  if (pathname === "/api/auth/logout" || pathname.startsWith("/api/oauth/") || pathname.startsWith("/api/public/") || pathname.startsWith("/api/webhooks/")) return response;
+  const user = await userFromRequest(request, env);
+  if (!user) return response;
+  const session = await createSignedCookie(
+    { userId: user.id, email: user.email, expiresAt: Date.now() + SESSION_IDLE_MS },
+    env.TOKEN_ENCRYPTION_KEY,
+  );
+  const headers = new Headers(response.headers);
+  headers.append("set-cookie", sessionCookie(session));
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
 function assertSameOrigin(request) {
@@ -422,7 +439,7 @@ async function handleOAuthCallback(request, env) {
     .first();
   const user = { id: linked?.user_id || `google:${googleEmail}`, email: googleEmail };
   const session = await createSignedCookie(
-    { userId: user.id, email: user.email, expiresAt: Date.now() + 30 * 24 * 60 * 60_000 },
+    { userId: user.id, email: user.email, expiresAt: Date.now() + SESSION_IDLE_MS },
     env.TOKEN_ENCRYPTION_KEY,
   );
   const access = await appAccess(env, user, true);
@@ -1414,7 +1431,10 @@ export default {
   async fetch(request, env) {
     try {
       const url = new URL(request.url);
-      if (url.pathname.startsWith("/api/")) return await routeApi(request, env);
+      if (url.pathname.startsWith("/api/")) {
+        const response = await routeApi(request, env);
+        return await refreshSession(request, env, response);
+      }
       return await serveApp(request, env);
     } catch (error) {
       if (error instanceof HttpError) return apiError(error.message, error.status, error.code, error.details);

@@ -248,6 +248,14 @@ test("keeps Gmail fallback search within the Worker subrequest budget", async ()
   assert.match(worker, /google_reconnect_required/);
 });
 
+test("expires login after seven idle days and refreshes active sessions", async () => {
+  const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  assert.match(worker, /SESSION_IDLE_SECONDS = 7 \* 24 \* 60 \* 60/);
+  assert.match(worker, /refreshSession/);
+  assert.match(page, /最後の操作から7日間アクセスがない場合/);
+});
+
 test("serves client routes without redirecting them to the landing page", async () => {
   const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
   assert.match(worker, /const isClientRoute/);

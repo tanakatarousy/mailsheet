@@ -1198,15 +1198,19 @@ svg {
 }
 
 .workbench-kicker {
-  display: grid;
-  min-width: 56px;
-  min-height: 31px;
-  place-items: center;
-  border: 1px solid var(--blue);
-  border-radius: 50%;
+  display: inline-flex;
+  min-width: 72px;
+  min-height: 30px;
+  padding: 0 13px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(16,31,166,.3);
+  border-radius: 999px;
+  background: var(--white);
   color: var(--blue);
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 800;
+  letter-spacing: .08em;
   white-space: nowrap;
 }
 
