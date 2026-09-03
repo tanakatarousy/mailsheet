@@ -1573,43 +1573,46 @@ async function handleFeedbackSubmit(request, env) {
   return json({ ok: true });
 }
 
-const TESTER_FEEDBACK_CATEGORIES = new Set(["不明点", "不具合", "質問・相談", "改善要望"]);
-
-async function handleUserFeedbackList(request, env) {
-  const user = await requireAuthorizedUser(request, env);
-  const ownerId = `app:${user.id}`;
-  const result = await requireDb(env).prepare(
-    "SELECT id, visitor_id, category, pain, current_process, desired_outcome, contact_email, status, created_at FROM feedback_requests WHERE visitor_id = ? ORDER BY created_at DESC LIMIT 30",
-  ).bind(ownerId).all();
-  return json({ ok: true, feedback: result.results || [] });
-}
+const TESTER_FEEDBACK_TEMPLATES = {
+  question: { category: "質問・不明点", operationLabel: "迷った操作", expectedLabel: "補足・試したこと" },
+  bug: { category: "不具合報告・修正依頼", operationLabel: "再現手順", expectedLabel: "本来の想定" },
+  survey: { category: "使用感アンケート", operationLabel: "良かった点", expectedLabel: "改善してほしい点" },
+};
 
 async function handleUserFeedbackSubmit(request, env) {
   const user = await requireAuthorizedUser(request, env);
   assertSameOrigin(request);
   const body = await readJson(request, 20_000);
-  const category = String(body.category || "").trim();
+  const templateId = String(body.template || "question").trim();
+  const template = TESTER_FEEDBACK_TEMPLATES[templateId];
   const page = String(body.page || "").trim().slice(0, 100);
   const operation = String(body.operation || "").trim().slice(0, 1_500);
   const details = String(body.details || "").trim().slice(0, 3_000);
   const expected = String(body.expected || "").trim().slice(0, 1_500);
-  if (!TESTER_FEEDBACK_CATEGORIES.has(category)) {
+  const rating = String(body.rating || "").trim();
+  if (!template) {
     throw new HttpError(400, "投稿の種類を選択してください。", "invalid_feedback_category");
   }
   if (details.length < 5) {
     throw new HttpError(400, "内容を5文字以上で入力してください。", "invalid_feedback_details");
   }
+  if (rating && (templateId !== "survey" || !["1", "2", "3", "4", "5"].includes(rating))) {
+    throw new HttpError(400, "使いやすさの評価を確認してください。", "invalid_feedback_rating");
+  }
   const ownerId = `app:${user.id}`;
-  const recent = await requireDb(env).prepare("SELECT COUNT(*) AS count FROM feedback_requests WHERE visitor_id = ? AND created_at >= ?")
+  const db = requireDb(env);
+  const recent = await db.prepare("SELECT COUNT(*) AS count FROM feedback_requests WHERE visitor_id = ? AND created_at >= ?")
     .bind(ownerId, new Date(Date.now() - 60 * 60_000).toISOString()).first();
   if (Number(recent?.count || 0) >= 10) {
     throw new HttpError(429, "短時間の投稿上限に達しました。時間を置いてお試しください。", "rate_limited");
   }
-  const context = [page ? `対象画面：${page}` : "", operation ? `直前の操作：${operation}` : ""].filter(Boolean).join("\n");
-  await requireDb(env).prepare(
+  const context = [page ? `対象画面：${page}` : "", rating ? `使いやすさ：${rating}/5` : "", operation ? `${template.operationLabel}：${operation}` : ""].filter(Boolean).join("\n");
+  const createdAt = new Date().toISOString();
+  const insert = await db.prepare(
     "INSERT INTO feedback_requests (visitor_id, category, pain, current_process, desired_outcome, contact_email, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'new', ?)",
-  ).bind(ownerId, category, details, context, expected, String(user.email || "").toLowerCase(), new Date().toISOString()).run();
-  return json({ ok: true });
+  ).bind(ownerId, template.category, details, context, expected ? `${template.expectedLabel}：${expected}` : "", String(user.email || "").toLowerCase(), createdAt).run();
+  const feedbackId = Number(insert.meta?.last_row_id || 0);
+  return json({ ok: true, id: feedbackId });
 }
 
 async function handleAdminOverview(request, env) {
@@ -1775,7 +1778,6 @@ async function routeApi(request, env) {
   if (method === "GET" && url.pathname === "/api/auth/status") return handleAuthStatus(request, env);
   if (method === "POST" && url.pathname === "/api/auth/disconnect") return handleDisconnect(request, env);
   if (method === "POST" && url.pathname === "/api/auth/logout") return handleLogout(request);
-  if (method === "GET" && url.pathname === "/api/feedback") return handleUserFeedbackList(request, env);
   if (method === "POST" && url.pathname === "/api/feedback") return handleUserFeedbackSubmit(request, env);
   if (method === "GET" && url.pathname === "/api/gmail/messages") return handleGmailMessages(request, env);
   if (method === "GET" && url.pathname === "/api/gmail/push/config") return handlePushConfig(request, env);
