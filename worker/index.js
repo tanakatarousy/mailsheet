@@ -1596,6 +1596,44 @@ async function handleAdminUserStatus(request, env) {
   return json({ ok: true, email, status });
 }
 
+async function handleAdminPendingInvite(request, env) {
+  await requireAdmin(request, env);
+  assertSameOrigin(request);
+  const body = await readJson(request);
+  const email = String(body.email || "").trim().toLowerCase();
+  const action = String(body.action || "");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, "対象メールアドレスを確認してください。", "invalid_email");
+  if (adminEmails(env).has(email)) throw new HttpError(400, "初期管理者は変更・削除できません。", "admin_cannot_edit");
+  const db = requireDb(env);
+  const user = await db.prepare("SELECT email, role, status, access_count FROM app_users WHERE email = ?").bind(email).first();
+  if (!user) throw new HttpError(404, "招待済みユーザーが見つかりません。", "user_not_found");
+  const connection = await db.prepare("SELECT user_id FROM google_connections WHERE lower(google_email) = ? LIMIT 1").bind(email).first();
+  if (user.role !== "tester" || user.status !== "invited" || Number(user.access_count || 0) > 0 || connection) {
+    throw new HttpError(409, "ログイン・接続済みの利用者はメール変更や削除ではなく、利用停止で管理してください。", "invite_already_used");
+  }
+  if (action === "delete") {
+    await db.prepare("DELETE FROM app_users WHERE email = ?").bind(email).run();
+    return json({ ok: true, action, email });
+  }
+  if (action === "rename") {
+    const newEmail = String(body.newEmail || "").trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) throw new HttpError(400, "変更後のメールアドレスを確認してください。", "invalid_email");
+    if (newEmail === email) return json({ ok: true, action, email: newEmail });
+    const duplicate = await db.prepare("SELECT email FROM app_users WHERE email = ?").bind(newEmail).first();
+    if (duplicate) throw new HttpError(409, "変更後のメールアドレスは既に登録されています。", "email_already_registered");
+    const now = new Date().toISOString();
+    await db.batch([
+      db.prepare(
+        `INSERT INTO app_users (email, role, status, invited_by, created_at, updated_at, last_access_at, access_count)
+         SELECT ?, role, status, invited_by, created_at, ?, last_access_at, access_count FROM app_users WHERE email = ?`,
+      ).bind(newEmail, now, email),
+      db.prepare("DELETE FROM app_users WHERE email = ?").bind(email),
+    ]);
+    return json({ ok: true, action, email: newEmail });
+  }
+  throw new HttpError(400, "招待リストの操作を確認してください。", "invalid_action");
+}
+
 async function routeApi(request, env) {
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
@@ -1628,6 +1666,7 @@ async function routeApi(request, env) {
   if (method === "GET" && url.pathname === "/api/admin/overview") return handleAdminOverview(request, env);
   if (method === "POST" && url.pathname === "/api/admin/invite") return handleAdminInvite(request, env);
   if (method === "POST" && url.pathname === "/api/admin/users/status") return handleAdminUserStatus(request, env);
+  if (method === "POST" && url.pathname === "/api/admin/invite/manage") return handleAdminPendingInvite(request, env);
   return apiError("APIが見つかりません。", 404, "not_found");
 }
 

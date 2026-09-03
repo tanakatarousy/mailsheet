@@ -321,6 +321,12 @@ test("supports ten saved rules, three active rules, and traceable automatic proc
   assert.match(page, /watchRepairAttempted/);
   assert.match(page, /受信監視停止/);
   assert.match(page, /Cloudflareへ最初の受信通知が届くのを待っています/);
+  assert.match(page, /受信通知の設定が未完了です/);
+  assert.match(page, /招待・登録ユーザー一覧/);
+  assert.match(page, /メール変更/);
+  assert.match(page, /招待削除/);
+  assert.match(worker, /handleAdminPendingInvite/);
+  assert.match(worker, /\/api\/admin\/invite\/manage/);
   assert.match(page, />監視開始<\/button>/);
   assert.match(worker, /const row = \[sheetTimestamp\(\), rule\.name, \.\.\.sheet\.headers\.slice\(2\)/);
 });

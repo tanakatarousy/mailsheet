@@ -3528,6 +3528,10 @@ svg {
 .admin-invite-form { display: flex; gap: 10px; }
 .admin-invite-form input { min-width: 0; min-height: 48px; padding: 0 15px; flex: 1; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); font: inherit; font-size: 14px; }
 .admin-invite-form button,.admin-table button { min-height: 38px; padding: 0 15px; border: 1px solid var(--blue); border-radius: 999px; background: var(--blue); color: white; font: inherit; font-size: 11px; font-weight: 750; }
+.admin-user-actions { display: flex; min-width: 270px; flex-wrap: wrap; gap: 6px; }
+.admin-table .admin-user-actions button { min-height: 32px; padding: 0 11px; }
+.admin-table .admin-user-actions button.is-secondary { background: white; color: var(--blue); }
+.admin-table .admin-user-actions button.is-danger { border-color: #d56d61; background: white; color: #a2392b; }
 .admin-invite-form button:disabled { opacity: .45; }
 .admin-callout { grid-column: 1 / -1; padding: 12px 15px; border-left: 3px solid var(--yellow); background: #fff9d9; color: #655d21 !important; }
 .admin-table-wrap { overflow-x: auto; }
@@ -3584,6 +3588,7 @@ svg {
   border-radius: 14px;
   background: #fffdf4;
 }
+.push-setup-panel.is-warning { border-color: #e2b85f; background: #fffaf0; }
 .push-setup-panel small { color: var(--red); font-size: 11px; font-weight: 800; letter-spacing: 0.12em; }
 .push-setup-panel h2 { margin: 6px 0; color: var(--blue); font-size: 22px; }
 .push-setup-panel p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }

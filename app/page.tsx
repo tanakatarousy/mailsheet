@@ -1666,6 +1666,25 @@ function AppShell({ onBack }: { onBack: () => void }) {
     } catch (error) { setAppNotice({ kind: "warning", text: errorText(error) }); }
   };
 
+  const renamePendingInvite = async (email: string) => {
+    const newEmail = window.prompt("変更後のGoogleアカウントのメールアドレス", email)?.trim();
+    if (!newEmail || newEmail.toLowerCase() === email.toLowerCase()) return;
+    try {
+      await postJson("/api/admin/invite/manage", { action: "rename", email, newEmail });
+      setAppNotice({ kind: "success", text: `招待メールを ${newEmail} へ変更しました。Google Cloudのテストユーザーも同じメールへ変更してください。` });
+      await loadAdmin();
+    } catch (error) { setAppNotice({ kind: "warning", text: errorText(error) }); }
+  };
+
+  const deletePendingInvite = async (email: string) => {
+    if (!window.confirm(`${email} を招待リストから削除しますか？`)) return;
+    try {
+      await postJson("/api/admin/invite/manage", { action: "delete", email });
+      setAppNotice({ kind: "success", text: `${email} を招待リストから削除しました。` });
+      await loadAdmin();
+    } catch (error) { setAppNotice({ kind: "warning", text: errorText(error) }); }
+  };
+
   const startGoogleConnection = () => {
     if (!auth?.configured) {
       setAppNotice({ kind: "warning", text: "Google Cloud側のOAuthクライアント設定が必要です。下のCallback URLを登録してください。" });
@@ -1830,7 +1849,15 @@ function AppShell({ onBack }: { onBack: () => void }) {
                     </div>
                   )}
                 </section>
-              ) : null}
+              ) : (
+                <section className="push-setup-panel is-warning">
+                  <div><small>GMAIL PUSH / 管理者向け</small><h2>受信通知の設定が未完了です</h2><p>CloudflareのRuntime variablesへ次の2項目を登録し、再デプロイしてください。設定後、この画面にTopicとPushエンドポイントを表示できます。</p></div>
+                  <div className="push-setup-values">
+                    <label><span>Text</span><code>GOOGLE_PUBSUB_TOPIC</code></label>
+                    <label><span>Secret</span><code>PUBSUB_WEBHOOK_SECRET</code></label>
+                  </div>
+                </section>
+              )}
             </section>
           ) : null}
 
@@ -1856,7 +1883,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
                 <article><span>今月の失敗</span><strong>{adminData?.metrics.processing.failed ?? 0}</strong><small>要確認 {adminData?.metrics.processing.review ?? 0}</small></article>
               </div>
               <section className="admin-panel admin-invite-panel"><div><small>INVITE TESTER</small><h2>テスターを招待</h2><p>ここへ登録したChatGPTアカウントのメールだけ、アプリへ入れます。</p></div><div className="admin-invite-form"><input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="tester@example.com" aria-label="招待するメールアドレス" /><button type="button" disabled={adminBusy || !inviteEmail.trim()} onClick={inviteTester}>招待リストへ追加</button></div><p className="admin-callout">Google OAuthもテストモードのため、Google Cloudの「テストユーザー」へ同じGmailを追加してください。</p></section>
-              <section className="admin-panel"><div className="admin-panel__heading"><div><small>USERS</small><h2>利用者とGoogle接続</h2></div></div><div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>利用者</th><th>状態</th><th>接続Gmail</th><th>最終アクセス</th><th>最終受信</th><th>最終処理</th><th>操作</th></tr></thead><tbody>{adminData?.users.map((user) => <tr key={user.email}><td><strong>{user.email}</strong><small>{user.role === "admin" ? "管理者" : `アクセス ${user.access_count || 0}回`}</small></td><td><span className={`admin-status is-${user.status}`}>{user.status === "active" ? "利用中" : user.status === "invited" ? "招待済み" : "停止中"}</span></td><td>{user.google_email || "未接続"}<small>{user.gmail_watch_expires_at ? `watch期限 ${formatAdminDate(user.gmail_watch_expires_at)}` : ""}</small></td><td>{formatAdminDate(user.last_access_at)}</td><td>{formatAdminDate(user.last_gmail_notification_at)}</td><td>{formatAdminDate(user.last_processed_at)}<small>{user.last_process_status || ""}</small></td><td>{user.role !== "admin" ? <button type="button" onClick={() => changeTesterStatus(user.email, user.status === "suspended" ? "invited" : "suspended")}>{user.status === "suspended" ? "再開" : "停止"}</button> : "—"}</td></tr>)}</tbody></table></div></section>
+              <section className="admin-panel"><div className="admin-panel__heading"><div><small>USERS</small><h2>招待・登録ユーザー一覧</h2><p>招待済みメールの修正・削除と、利用者の停止・再開を管理できます。</p></div></div><div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>利用者</th><th>状態</th><th>接続Gmail</th><th>最終アクセス</th><th>最終受信</th><th>最終処理</th><th>操作</th></tr></thead><tbody>{adminData?.users.map((user) => <tr key={user.email}><td><strong>{user.email}</strong><small>{user.role === "admin" ? "管理者" : `アクセス ${user.access_count || 0}回`}</small></td><td><span className={`admin-status is-${user.status}`}>{user.status === "active" ? "利用中" : user.status === "invited" ? "招待済み" : "停止中"}</span></td><td>{user.google_email || "未接続"}<small>{user.gmail_watch_expires_at ? `watch期限 ${formatAdminDate(user.gmail_watch_expires_at)}` : ""}</small></td><td>{formatAdminDate(user.last_access_at)}</td><td>{formatAdminDate(user.last_gmail_notification_at)}</td><td>{formatAdminDate(user.last_processed_at)}<small>{user.last_process_status || ""}</small></td><td>{user.role !== "admin" ? <div className="admin-user-actions"><button type="button" onClick={() => changeTesterStatus(user.email, user.status === "suspended" ? "invited" : "suspended")}>{user.status === "suspended" ? "再開" : "停止"}</button>{user.status === "invited" && !user.access_count && !user.google_email ? <><button type="button" className="is-secondary" onClick={() => renamePendingInvite(user.email)}>メール変更</button><button type="button" className="is-danger" onClick={() => deletePendingInvite(user.email)}>招待削除</button></> : null}</div> : "—"}</td></tr>)}</tbody></table></div></section>
               <div className="admin-two-column">
                 <section className="admin-panel cost-panel"><small>COST WATCH</small><h2>料金・無料枠</h2><div className="cost-row"><span>Pub/Sub</span><strong>月10 GiBまで無料</strong><small>今月の通知 {adminData?.costs.notificationCount ?? 0}件</small></div><div className="cost-row"><span>Cloud Scheduler</span><strong>月3ジョブまで無料</strong><small>想定 {adminData?.costs.expectedSchedulerJobs ?? 0}ジョブ</small></div><p>{adminData?.costs.note || "実請求額は取得していません。"}</p>{adminData?.system.cloudProjectId ? <a href={`https://console.cloud.google.com/billing?project=${encodeURIComponent(adminData.system.cloudProjectId)}`} target="_blank" rel="noreferrer">Google Cloudの請求を確認 ↗</a> : null}</section>
                 <section className="admin-panel system-panel"><small>SYSTEM STATUS</small><h2>連携状態</h2><ul><li><span>OAuth設定</span><strong>{adminData?.system.oauthConfigured ? "正常" : "未設定"}</strong></li><li><span>Gmail受信通知</span><strong>{adminData?.system.gmailPushConfigured ? "有効" : "未設定"}</strong></li><li><span>データベース</span><strong>{adminData?.system.databaseConfigured ? "正常" : "未設定"}</strong></li><li><span>今月のwatch更新</span><strong>{adminData?.metrics.watchRenewals ?? 0}回</strong></li></ul></section>
