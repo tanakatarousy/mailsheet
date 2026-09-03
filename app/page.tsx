@@ -374,8 +374,21 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [selectionName, setSelectionName] = useState("");
   const [sheetConnection, setSheetConnection] = useState<{ state: "idle" | "checking" | "connected" | "error"; message: string }>({ state: "idle", message: "" });
   const draggedRuleId = useRef<number | null>(null);
+  const savedRulesRef = useRef<HTMLElement | null>(null);
+  const gmailResultsRef = useRef<HTMLDivElement | null>(null);
+  const mailPreviewRef = useRef<HTMLDivElement | null>(null);
+  const selectionBuilderRef = useRef<HTMLDivElement | null>(null);
+  const extractionRulesRef = useRef<HTMLElement | null>(null);
+  const testSectionRef = useRef<HTMLElement | null>(null);
   const rulesRef = useRef(rules);
   useEffect(() => { rulesRef.current = rules; }, [rules]);
+
+  const scrollToRef = (ref: { current: HTMLElement | null }, delay = 80) => {
+    window.setTimeout(() => ref.current?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "center",
+    }), delay);
+  };
 
   const selectedRule = rules.find((rule) => rule.id === selectedRuleId) ?? rules[0];
   const results = useMemo(
@@ -556,6 +569,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       setSelectedRuleId(id);
     }
     markChanged();
+    scrollToRef(extractionRulesRef);
   };
 
   const addAllDetectedFields = () => {
@@ -566,6 +580,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setMappings(Object.fromEntries(next.map((rule) => [rule.id, ""])));
     markChanged();
     setNotice({ kind: "success", text: `${next.length}項目を候補から追加しました。不要な項目は削除できます。` });
+    scrollToRef(extractionRulesRef);
   };
 
   const captureMailText = (text: string) => {
@@ -574,6 +589,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     if (!generated) return;
     setSelectedText(text);
     setSelectionName(generated.suggestedName);
+    scrollToRef(selectionBuilderRef);
   };
 
   const addSelectedTextRule = () => {
@@ -591,6 +607,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     markChanged();
     setNotice({ kind: "success", text: `「${generated.rule.name}」を追加しました。取得条件は自動設定済みです。保存するとルールに反映されます。` });
     window.getSelection()?.removeAllRanges();
+    scrollToRef(extractionRulesRef);
   };
 
   const removeRule = (id: number) => {
@@ -648,6 +665,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       });
       const response = await apiFetch<{ ok: true; messages: GmailMessage[]; matchMode?: "exact" | "close" | "recent" }>(`/api/gmail/messages?${params}`);
       setGmailMessages(response.messages);
+      if (response.messages.length) scrollToRef(gmailResultsRef);
       if (response.messages[0]) {
         if (response.matchMode !== "recent") selectMessage(response.messages[0]);
         if (response.matchMode === "close") setNotice({ kind: "warning", text: "表記が近いメールを見つけました。内容を確認して選択してください。" });
@@ -736,6 +754,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       setSavedRules((current) => [response.rule, ...current.filter((item) => item.id !== response.rule.id)]);
       setNotice({ kind: "success", text: "抽出条件と列の紐付けを保存しました。" });
       onDataChanged?.();
+      scrollToRef(savedRulesRef);
     } catch (error) {
       setNotice({ kind: "warning", text: errorText(error) });
     } finally {
@@ -744,6 +763,10 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   };
 
   const setStoredRuleActive = async (item: SavedRule, active: boolean) => {
+    if (active && ruleId === item.id) {
+      await saveRule(true);
+      return;
+    }
     setBusy("save");
     setNotice(null);
     try {
@@ -866,7 +889,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       ) : null}
 
       {live && savedRules.length ? (
-        <section className="saved-rules-manager" aria-label="保存済みルール管理">
+        <section ref={savedRulesRef} className="saved-rules-manager" aria-label="保存済みルール管理">
           <div className="saved-rules-manager__heading">
             <div><span>SAVED RULES</span><strong>保存済みルール {savedRules.length}件</strong></div>
           </div>
@@ -927,9 +950,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           {live ? <button type="button" className="condition-search-button" onClick={loadGmail} disabled={!auth?.connected || Boolean(busy)}>{busy === "gmail" ? "検索中…" : "一致する実メールを探す"}</button> : null}
         </div>
         {live && gmailMessages.length ? (
-          <div className="gmail-sample-list" aria-label="一致したGmail">
+          <div ref={gmailResultsRef} className="gmail-sample-list" aria-label="一致したGmail">
             {gmailMessages.map((message) => (
-              <button key={message.id} type="button" onClick={() => selectMessage(message)} className={emailMeta.subject === message.subject && emailBody === message.body ? "is-selected" : undefined}>
+              <button key={message.id} type="button" onClick={() => { selectMessage(message); scrollToRef(mailPreviewRef); }} className={emailMeta.subject === message.subject && emailBody === message.body ? "is-selected" : undefined}>
                 <strong>{message.subject}</strong><span>{message.from}</span><small>{message.snippet}</small>
               </button>
             ))}
@@ -938,12 +961,12 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       </section>
 
       <section className="rule-editor-grid" aria-labelledby="rules-title">
-        <div className="mail-preview-pane">
+        <div ref={mailPreviewRef} className="mail-preview-pane">
           <div className="section-mini-heading"><span>02</span><div><small>SAMPLE MAIL</small><h3>メールを確認</h3></div></div>
           <p className="selection-guide"><strong>本文中の値をドラッグして選択</strong><span>スマホは長押しで選べます。周囲の見出しから取得ルールを自動作成します。</span></p>
           <EmailDocument body={emailBody} rules={rules} subject={emailMeta.subject} from={emailMeta.from} onTextSelect={captureMailText} />
           {selectedText ? (
-            <div className="selection-rule-builder" role="status">
+            <div ref={selectionBuilderRef} className="selection-rule-builder" role="status">
               <span>選択した文字</span>
               <strong>{selectedText}</strong>
               <label><span>シートの項目名</span><input value={selectionName} onChange={(event) => setSelectionName(event.target.value)} placeholder="例：氏名、注文番号" /></label>
@@ -964,12 +987,13 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
 
         <div className="rule-pane">
           <div className="section-mini-heading"><span>03</span><div><small>EXTRACT RULES</small><h3 id="rules-title">取得項目を自由に指定</h3></div></div>
-          <div className="rule-list" role="list" aria-label="抽出項目一覧">
+          <p className="rule-reorder-hint">↕ 左のハンドルをつかんで、項目を上下に並び替えられます。</p>
+          <section ref={extractionRulesRef} className="rule-list" role="list" aria-label="抽出項目一覧">
             {rules.map((rule, index) => {
               const value = extractValue(emailBody, rule);
               return (
                 <div key={rule.id} data-rule-id={rule.id} className={selectedRuleId === rule.id ? "rule-list-item is-selected" : "rule-list-item"} role="listitem" onDragOver={(event) => event.preventDefault()} onDrop={() => dropRule(rule.id)}>
-                  <span className="rule-drag-handle" draggable onDragStart={() => { draggedRuleId.current = rule.id; }} onDragEnd={() => { draggedRuleId.current = null; }} title="つかんで並び替え" aria-label={`${rule.name}をドラッグして並び替え`}>⋮⋮</span>
+                  <span className="rule-drag-handle" draggable onDragStart={() => { draggedRuleId.current = rule.id; }} onDragEnd={() => { draggedRuleId.current = null; }} title="つかんで並び替え" aria-label={`${rule.name}をドラッグして並び替え`}>↕</span>
                   <button type="button" className="rule-list-item__main" onClick={() => setSelectedRuleId(rule.id)}>
                     <i>{String(index + 1).padStart(2, "0")}</i><span><strong>{rule.name}</strong><small>{value || "未抽出"}</small></span><em className={value ? "status-dot is-success" : "status-dot"}>{value ? "✓" : "!"}</em>
                   </button>
@@ -981,7 +1005,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                 </div>
               );
             })}
-          </div>
+          </section>
           <button type="button" className="add-rule-button" onClick={addRule}><Icon name="plus" size={17} /> 項目を追加</button>
 
           {selectedRule ? (
@@ -1034,9 +1058,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         {live ? <div className="sheet-actions"><button type="button" className="button button--blue" onClick={testWrite} disabled={Boolean(busy) || sheetConnection.state !== "connected"}>{busy === "write" ? "書き込み中…" : "この内容をテスト書き込み"}</button><button type="button" className="button button--outline" onClick={runRule} disabled={Boolean(busy) || !ruleId || sheetConnection.state !== "connected"}>{busy === "run" ? "転記中…" : "一致メールを手動で転記"}</button></div> : null}
       </section>
 
-      <section className="test-section" aria-labelledby="test-title">
+      <section ref={testSectionRef} className="test-section" aria-labelledby="test-title">
         <div><small>FINAL CHECK</small><h3 id="test-title">抽出結果を確認</h3><p>保存前に、必要な値が正しく取り出せるか確認します。</p></div>
-        <button type="button" className="button button--red" onClick={() => setTestStatus("complete")}><Icon name="play" size={18} /> このメールでテストする</button>
+        <button type="button" className="button button--red" onClick={() => { setTestStatus("complete"); scrollToRef(testSectionRef); }}><Icon name="play" size={18} /> このメールでテストする</button>
         {testStatus === "complete" ? (
           <div className="test-results" aria-live="polite">
             {results.map(({ rule, value }) => <div key={rule.id} className={value ? "test-result is-success" : "test-result is-warning"}><span>{rule.name}</span><strong>{value || "抽出できませんでした"}</strong><i>{value ? "✓" : "⚠"}</i></div>)}

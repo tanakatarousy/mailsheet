@@ -920,7 +920,8 @@ async function handleRuleSave(request, env) {
   if (body.active && (!body.spreadsheetId || !body.sheetName)) {
     throw new HttpError(400, "自動追加をONにするには、SpreadsheetとSheetを設定してください。", "sheet_not_configured");
   }
-  if (body.active && (!body.sheetHeaders.length || Object.values(body.mappings).filter(Boolean).length < body.fields.length)) {
+  const hasMissingMapping = body.fields.some((field) => !String(body.mappings[String(field.id)] || "").trim());
+  if (body.active && (!body.sheetHeaders.length || hasMissingMapping)) {
     throw new HttpError(400, "自動追加をONにするには、1行目の見出しを取得し、すべての取得項目に出力列を割り当ててください。", "mapping_incomplete");
   }
   const db = requireDb(env);

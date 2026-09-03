@@ -276,6 +276,19 @@ test("searches Gmail with only the condition selected by the user", async () => 
   assert.match(page, /placeholder="notice@example\.com"/);
 });
 
+test("saves current sheet mappings when enabling a rule and guides the next action", async () => {
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
+  assert.match(page, /active && ruleId === item\.id/);
+  assert.match(page, /await saveRule\(true\)/);
+  assert.match(page, /scrollToRef\(savedRulesRef\)/);
+  assert.match(page, /scrollToRef\(gmailResultsRef\)/);
+  assert.match(page, /scrollToRef\(selectionBuilderRef\)/);
+  assert.match(page, /scrollToRef\(extractionRulesRef\)/);
+  assert.match(page, /左のハンドルをつかんで、項目を上下に並び替えられます/);
+  assert.match(worker, /body\.fields\.some\(\(field\) => !String\(body\.mappings\[String\(field\.id\)\]/);
+});
+
 test("serves client routes without redirecting them to the landing page", async () => {
   const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
   assert.match(worker, /const isClientRoute/);

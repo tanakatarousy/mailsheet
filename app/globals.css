@@ -1841,6 +1841,12 @@ svg {
   gap: 6px;
 }
 
+.rule-reorder-hint {
+  margin: -4px 0 9px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .rule-list-item {
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -1857,8 +1863,8 @@ svg {
   place-items: center;
   color: #777aa0;
   cursor: grab;
-  font-size: 18px;
-  letter-spacing: -5px;
+  font-size: 17px;
+  font-weight: 800;
   touch-action: none;
   user-select: none;
 }
