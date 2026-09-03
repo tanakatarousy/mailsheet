@@ -1574,9 +1574,9 @@ async function handleFeedbackSubmit(request, env) {
 }
 
 const TESTER_FEEDBACK_TEMPLATES = {
-  question: { category: "質問・不明点", operationLabel: "迷った操作", expectedLabel: "補足・試したこと" },
-  bug: { category: "不具合報告・修正依頼", operationLabel: "再現手順", expectedLabel: "本来の想定" },
-  survey: { category: "使用感アンケート", operationLabel: "良かった点", expectedLabel: "改善してほしい点" },
+  question: { category: "質問・不明点", operationLabel: "迷った画面・操作", expectedLabel: "試したこと・補足" },
+  bug: { category: "不具合報告・修正依頼", operationLabel: "問題が起きるまでの操作", expectedLabel: "期待していた動作" },
+  survey: { category: "使用感アンケート", operationLabel: "良かった・使いやすかった点", expectedLabel: "改善してほしい点" },
 };
 
 async function handleUserFeedbackSubmit(request, env) {

@@ -1716,34 +1716,34 @@ const testerFeedbackTemplates: Array<{
     id: "question",
     number: "01",
     label: "質問・不明点",
-    description: "操作方法や設定で分からないこと",
-    detailsLabel: "知りたいこと・分からないこと",
-    detailsPlaceholder: "例：転記先の列を変更する方法が分かりません。",
-    operationLabel: "どの操作で迷ったか",
-    operationPlaceholder: "例：転記ルールを開き、出力先をつなぐところまで進みました。",
-    expectedLabel: "補足・試したこと",
+    description: "使い方や設定について確認したい",
+    detailsLabel: "質問・確認したいこと",
+    detailsPlaceholder: "例：転記先の列を変更する方法を教えてください。",
+    operationLabel: "迷った画面・操作",
+    operationPlaceholder: "例：転記ルールの「出力先をつなぐ」まで進みました。",
+    expectedLabel: "試したこと・補足",
     expectedPlaceholder: "例：使い方ガイドを見ましたが、該当する説明を見つけられませんでした。",
   },
   {
     id: "bug",
     number: "02",
     label: "不具合報告・修正依頼",
-    description: "動かない、表示がおかしい、直してほしいこと",
-    detailsLabel: "発生した問題・修正してほしいこと",
+    description: "動かない・表示がおかしい・直してほしい",
+    detailsLabel: "発生している問題",
     detailsPlaceholder: "例：新着メールを受信しても、スプレッドシートへ転記されません。",
-    operationLabel: "発生するまでの操作・再現手順",
-    operationPlaceholder: "例：転記ルールを保存 → 新着メールの自動転記をON → テストメールを受信",
-    expectedLabel: "本来どうなってほしかったか",
+    operationLabel: "問題が起きるまでの操作",
+    operationPlaceholder: "例：転記ルールを保存 → 自動追加をON → テストメールを受信",
+    expectedLabel: "期待していた動作",
     expectedPlaceholder: "例：受信したメールの内容が、シートの最終行へ1件追加される。",
   },
   {
     id: "survey",
     number: "03",
     label: "使用感アンケート",
-    description: "使いやすさ、良かった点、改善してほしい点",
-    detailsLabel: "使ってみた感想",
+    description: "良かった点や改善してほしい点を伝える",
+    detailsLabel: "全体を通して感じたこと",
     detailsPlaceholder: "例：メールを選んで項目を作る流れは分かりやすかったです。",
-    operationLabel: "良かった点",
+    operationLabel: "良かった・使いやすかった点",
     operationPlaceholder: "例：次に何をすればよいか画面内に表示される点。",
     expectedLabel: "改善してほしい点",
     expectedPlaceholder: "例：列の割り当て方法を、もう少し大きく表示してほしいです。",
@@ -1763,7 +1763,7 @@ function TesterFeedback() {
     try {
       await postJson<{ ok: true; id: number }>("/api/feedback", form);
       setForm((current) => ({ ...current, details: "", operation: "", expected: "", rating: "" }));
-      setMessage("投稿しました。内容を管理者へ送りました。");
+      setMessage("送信しました。管理者が内容を確認します。");
       setState("sent");
     } catch (error) {
       setMessage(errorText(error));
@@ -1773,24 +1773,24 @@ function TesterFeedback() {
 
   return (
     <section className="app-view tester-feedback-view">
-      <div className="app-view-heading"><div><span>TESTER FEEDBACK</span><h1>質問・不具合・使用感を投稿</h1><p>内容に合う種類を選ぶと、入力しやすい質問へ切り替わります。</p></div></div>
+      <div className="app-view-heading"><div><span>TESTER FEEDBACK</span><h1>質問・不具合・ご意見を送る</h1><p>内容に近い項目を選び、分かる範囲で入力してください。</p></div></div>
       <div className="tester-feedback-layout">
         <form className="tester-feedback-form" onSubmit={submitFeedback}>
-          <div className="tester-feedback-form__heading"><small>CHOOSE A TEMPLATE</small><h2>投稿内容を選んでください</h2><p>選んだ内容に合わせて入力欄が切り替わります。詳しい原因が分からなくても、そのまま書いて大丈夫です。</p></div>
+          <div className="tester-feedback-form__heading"><small>POST TYPE</small><h2>投稿する内容を選択</h2><p>選んだ内容に合わせて入力欄が変わります。原因や詳しい操作が分からなくても送信できます。</p></div>
           <div className="tester-feedback-tabs" role="tablist" aria-label="投稿内容の種類">{testerFeedbackTemplates.map((item) => <button type="button" role="tab" aria-selected={form.template === item.id} className={form.template === item.id ? "is-active" : ""} key={item.id} onClick={() => { setForm((current) => ({ ...current, template: item.id, rating: "" })); setMessage(""); setState("idle"); }}><span>{item.number}</span><strong>{item.label}</strong><small>{item.description}</small></button>)}</div>
-          <div className="tester-feedback-template-heading"><span>{template.number}</span><div><small>SELECTED TEMPLATE</small><h3>{template.label}</h3></div></div>
-          <label><span>対象の画面 <small>任意</small></span><select value={form.page} onChange={(event) => setForm((current) => ({ ...current, page: event.target.value }))}><option>Google接続</option><option>転記ルール</option><option>処理履歴</option><option>設定</option><option>使い方ガイド</option><option>ログイン</option><option>アプリ全体</option><option>その他</option></select></label>
-          {form.template === "survey" ? <fieldset className="tester-feedback-rating"><legend>全体の使いやすさ <small>任意</small></legend><div>{[1, 2, 3, 4, 5].map((score) => <button type="button" key={score} className={form.rating === String(score) ? "is-active" : ""} aria-pressed={form.rating === String(score)} onClick={() => setForm((current) => ({ ...current, rating: String(score) }))}><strong>{score}</strong><span>{score === 1 ? "使いにくい" : score === 5 ? "使いやすい" : ""}</span></button>)}</div></fieldset> : null}
+          <div className="tester-feedback-template-heading"><span>{template.number}</span><div><small>選択中</small><h3>{template.label}</h3></div></div>
+          <label><span>どの画面についてですか？ <small>任意</small></span><select value={form.page} onChange={(event) => setForm((current) => ({ ...current, page: event.target.value }))}><option>Google接続</option><option>転記ルール</option><option>処理履歴</option><option>設定</option><option>使い方ガイド</option><option>ログイン</option><option>アプリ全体</option><option>その他</option></select></label>
+          {form.template === "survey" ? <fieldset className="tester-feedback-rating"><legend>全体的な使いやすさ <small>任意</small></legend><div>{[1, 2, 3, 4, 5].map((score) => <button type="button" key={score} className={form.rating === String(score) ? "is-active" : ""} aria-pressed={form.rating === String(score)} onClick={() => setForm((current) => ({ ...current, rating: String(score) }))}><strong>{score}</strong><span>{score === 1 ? "使いにくい" : score === 5 ? "使いやすい" : ""}</span></button>)}</div></fieldset> : null}
           <label><span>{template.detailsLabel} <b>必須</b></span><textarea value={form.details} onChange={(event) => setForm((current) => ({ ...current, details: event.target.value }))} placeholder={template.detailsPlaceholder} required minLength={5} rows={5} /></label>
           <label><span>{template.operationLabel} <small>任意</small></span><textarea value={form.operation} onChange={(event) => setForm((current) => ({ ...current, operation: event.target.value }))} placeholder={template.operationPlaceholder} rows={3} /></label>
           <label><span>{template.expectedLabel} <small>任意</small></span><textarea value={form.expected} onChange={(event) => setForm((current) => ({ ...current, expected: event.target.value }))} placeholder={template.expectedPlaceholder} rows={3} /></label>
-          <div className="tester-feedback-submit"><button className="button button--blue" type="submit" disabled={state === "sending" || form.details.trim().length < 5}>{state === "sending" ? "送信中…" : "管理者へ投稿"} <Icon name="arrow" size={16} /></button></div>
+          <div className="tester-feedback-submit"><button className="button button--blue" type="submit" disabled={state === "sending" || form.details.trim().length < 5}>{state === "sending" ? "送信中…" : "この内容を送信する"} <Icon name="arrow" size={16} /></button></div>
           {message ? <p className={state === "sent" ? "tester-feedback-message is-success" : "tester-feedback-message is-error"} role="status">{message}</p> : null}
         </form>
 
         <aside className="tester-feedback-tips">
-          <small>WRITING TIPS</small><h2>この3点があると確認が早くなります</h2>
-          <ol><li><span>1</span><p><strong>どの画面か</strong>Google接続、転記ルールなど。</p></li><li><span>2</span><p><strong>何をしたか</strong>押したボタンや入力した条件。</p></li><li><span>3</span><p><strong>何が起きたか</strong>表示された文章や実際の結果。</p></li></ol>
+          <small>WRITING TIPS</small><h2>この3点を書くと確認がスムーズです</h2>
+          <ol><li><span>1</span><p><strong>対象の画面</strong>Google接続、転記ルールなど。</p></li><li><span>2</span><p><strong>行った操作</strong>押したボタンや入力した条件。</p></li><li><span>3</span><p><strong>起きたこと</strong>表示された文章や実際の結果。</p></li></ol>
           <p>メール本文やSpreadsheetに個人情報が含まれる場合は、氏名・電話番号などを伏せて投稿してください。</p>
         </aside>
       </div>
