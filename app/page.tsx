@@ -353,8 +353,8 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [emailMeta, setEmailMeta] = useState({ subject: "新しい応募", from: "notice@example.com" });
   const [rules, setRules] = useState<ExtractionRule[]>(starterRules);
   const [selectedRuleId, setSelectedRuleId] = useState(starterRules[0].id);
-  const [sender, setSender] = useState("notice@example.com");
-  const [subject, setSubject] = useState("新しい応募");
+  const [sender, setSender] = useState("");
+  const [subject, setSubject] = useState("");
   const [conditionMode, setConditionMode] = useState<"sender" | "subject">("sender");
   const [testStatus, setTestStatus] = useState<"idle" | "complete">("idle");
   const [saved, setSaved] = useState(false);
@@ -641,7 +641,11 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setBusy("gmail");
     setNotice(null);
     try {
-      const params = new URLSearchParams({ from: sender.trim(), subject: subject.trim(), limit: "8" });
+      const params = new URLSearchParams({
+        from: conditionMode === "sender" ? sender.trim() : "",
+        subject: conditionMode === "subject" ? subject.trim() : "",
+        limit: "8",
+      });
       const response = await apiFetch<{ ok: true; messages: GmailMessage[]; matchMode?: "exact" | "close" | "recent" }>(`/api/gmail/messages?${params}`);
       setGmailMessages(response.messages);
       if (response.messages[0]) {
@@ -919,7 +923,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           <button type="button" role="tab" aria-selected={conditionMode === "subject"} className={conditionMode === "subject" ? "is-active" : ""} onClick={() => { setConditionMode("subject"); setSender(""); markChanged(); }}>件名で探す</button>
         </div>
         <div className="condition-fields">
-          {conditionMode === "sender" ? <label><span>差出人のメールアドレス、または表示名</span><input value={sender} onChange={(event) => { setSender(event.target.value); markChanged(); }} placeholder="例：notice@example.com" /></label> : <label><span>件名に含まれる文字</span><input value={subject} onChange={(event) => { setSubject(event.target.value); markChanged(); }} placeholder="例：新しい応募" /></label>}
+          {conditionMode === "sender" ? <label><span>差出人のメールアドレス、または表示名</span><input value={sender} onChange={(event) => { setSender(event.target.value); markChanged(); }} placeholder="notice@example.com" /></label> : <label><span>件名に含まれる文字</span><input value={subject} onChange={(event) => { setSubject(event.target.value); markChanged(); }} placeholder="例：新しい応募" /></label>}
           {live ? <button type="button" className="condition-search-button" onClick={loadGmail} disabled={!auth?.connected || Boolean(busy)}>{busy === "gmail" ? "検索中…" : "一致する実メールを探す"}</button> : null}
         </div>
         {live && gmailMessages.length ? (

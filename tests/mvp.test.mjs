@@ -267,6 +267,14 @@ test("preserves the selected app tab across refreshes", async () => {
   assert.match(page, /handleAppPopState/);
 });
 
+test("searches Gmail with only the condition selected by the user", async () => {
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  assert.match(page, /const \[sender, setSender\] = useState\(""\)/);
+  assert.match(page, /from: conditionMode === "sender" \? sender\.trim\(\) : ""/);
+  assert.match(page, /subject: conditionMode === "subject" \? subject\.trim\(\) : ""/);
+  assert.match(page, /placeholder="notice@example\.com"/);
+});
+
 test("serves client routes without redirecting them to the landing page", async () => {
   const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
   assert.match(worker, /const isClientRoute/);
