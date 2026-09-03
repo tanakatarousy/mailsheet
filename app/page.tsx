@@ -14,6 +14,8 @@ import {
 } from "@/lib/api";
 import {
   extractValue,
+  extractValueResult,
+  extractionLocatorIsSafe,
   detectFields,
   initialRules,
   methodLabels,
@@ -34,6 +36,10 @@ const resolveMappedSheetColumn = (headers: SheetInfo["headers"], mappedValue: un
   if (columnToken && outputHeaders.some((header) => header.column === columnToken)) return columnToken;
   return outputHeaders.find((header) => header.label === value)?.column || "";
 };
+const extractionFieldNeedsSafetyReview = (field: ExtractionRule) => (
+  field.method !== "regex" || !extractionLocatorIsSafe(field.locator)
+);
+const savedRuleNeedsAnchorReview = (item: SavedRule) => item.fields.some(extractionFieldNeedsSafetyReview);
 const formatAdminDate = (value?: string | number) => {
   if (!value) return "—";
   const date = new Date(typeof value === "number" ? value : value);
@@ -254,15 +260,28 @@ function EmailDocument({
   rules?: ExtractionRule[];
   subject?: string;
   from?: string;
-  onTextSelect?: (text: string) => void;
+  onTextSelect?: (selection: { text: string; start: number }) => void;
 }) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const captureSelection = () => {
     if (!onTextSelect || !bodyRef.current) return;
     const selection = window.getSelection();
-    const text = selection?.toString().trim() ?? "";
+    const rawText = selection?.toString() ?? "";
+    const text = rawText.trim();
     if (!text || text.length > 500 || !selection?.anchorNode || !bodyRef.current.contains(selection.anchorNode)) return;
-    onTextSelect(text);
+    const range = selection.getRangeAt(0);
+    const startElement = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
+    const paragraph = startElement?.closest<HTMLElement>("p[data-line-index]");
+    if (!paragraph || !bodyRef.current.contains(paragraph)) return;
+    const lineIndex = Number(paragraph.dataset.lineIndex || 0);
+    const prefixRange = document.createRange();
+    prefixRange.selectNodeContents(paragraph);
+    prefixRange.setEnd(range.startContainer, range.startOffset);
+    const lineStarts = [0];
+    for (const match of body.matchAll(/\r\n?|\n/g)) lineStarts.push((match.index ?? 0) + match[0].length);
+    const lineStart = lineStarts[lineIndex] ?? 0;
+    const leadingWhitespace = rawText.length - rawText.trimStart().length;
+    onTextSelect({ text, start: lineStart + prefixRange.toString().length + leadingWhitespace });
   };
   return (
     <div className="email-document" aria-label="メール本文プレビュー">
@@ -283,7 +302,7 @@ function EmailDocument({
           const value = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : line;
           const ruleIndex = marker ? rules.findIndex((rule) => rule.start === marker) : -1;
           return (
-            <p key={`${line}-${index}`} className={ruleIndex >= 0 ? `is-target target-${ruleIndex % 4}` : undefined}>
+            <p key={`${line}-${index}`} data-line-index={index} className={ruleIndex >= 0 ? `is-target target-${ruleIndex % 4}` : undefined}>
               {marker ? <span>{marker}</span> : null}
               {value}
             </p>
@@ -431,6 +450,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [busy, setBusy] = useState<"" | "gmail" | "sheet" | "save" | "write" | "run">("");
   const [notice, setNotice] = useState<{ kind: "success" | "warning"; text: string } | null>(null);
   const [selectedText, setSelectedText] = useState("");
+  const [selectedTextStart, setSelectedTextStart] = useState<number | null>(null);
   const [selectionName, setSelectionName] = useState("");
   const [sheetConnection, setSheetConnection] = useState<{ state: "idle" | "checking" | "connected" | "error"; message: string }>({ state: "idle", message: "" });
   const [recentInputHistory, setRecentInputHistory] = useState<RecentInputHistory>(emptyRecentInputHistory);
@@ -518,17 +538,20 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
 
   const selectedRule = rules.find((rule) => rule.id === selectedRuleId) ?? rules[0];
   const results = useMemo(
-    () => rules.map((rule) => ({ rule, value: extractValue(emailBody, rule) })),
+    () => rules.map((rule) => ({ rule, value: extractValue(emailBody, rule, rules) })),
     [emailBody, rules],
   );
+  const selectedExtraction = selectedRule ? extractValueResult(emailBody, selectedRule, rules) : null;
   const hasMissingResult = results.some((item) => !item.value);
   const detectedFields = useMemo(() => detectFields(emailBody), [emailBody]);
   const ruleHealth = (item: SavedRule) => {
     const missing: string[] = [];
+    const unsafeField = item.fields.find(extractionFieldNeedsSafetyReview);
     if (!item.spreadsheetId) missing.push("Spreadsheet");
     if (!item.sheetName) missing.push("Sheet");
     if (!item.sheetHeaders.length) missing.push("1行目の見出し");
     if (item.fields.some((field) => !item.mappings[String(field.id)])) missing.push("出力列の割り当て");
+    if (unsafeField) return { tone: "error", label: "設定確認", message: `「${unsafeField.name}」の取得位置を確認してください。確認が終わるまで誤転記を防ぐため処理を停止します。` };
     if (!item.active) return { tone: "stopped", label: "停止中", message: "新着メールの自動転記がOFFです。「自動転記ON」を押すと稼働します。" };
     if (!auth?.gmailPushConfigured) return { tone: "error", label: "受信通知未設定", message: "Gmail受信通知が未設定のため、自動転記は開始されません。" };
     if (!auth?.gmailWatchActive) return { tone: "error", label: "受信監視停止", message: "Gmailの新着監視が止まっています。「監視開始」を押してください。" };
@@ -539,18 +562,20 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     return { tone: "ready", label: "待機中", message: `Gmail通知を受信済みです（最終 ${new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(auth.lastGmailNotificationAt))}）。条件に一致する新着メールを待っています。` };
   };
 
-  const applySavedRule = (item: SavedRule) => {
+  const applySavedRule = (item: SavedRule, preferredFieldId?: number) => {
     setRuleId(item.id);
     setRuleName(item.name);
     setSender(item.sender || "");
     setSubject(item.sender ? "" : item.subjectContains);
     setConditionMode(item.sender ? "sender" : "subject");
     setRules(item.fields);
-    setSelectedRuleId(item.fields[0]?.id ?? 1);
+    setSelectedText("");
+    setSelectedTextStart(null);
+    setSelectedRuleId(item.fields.some((field) => field.id === preferredFieldId) ? preferredFieldId! : item.fields[0]?.id ?? 1);
     setSpreadsheetInput(item.spreadsheetId);
     setSheetName(item.sheetName);
     setMappings(Object.fromEntries(Object.entries(item.mappings).map(([key, value]) => [Number(key), value])));
-    setAutoAdd(item.active);
+    setAutoAdd(item.active && !savedRuleNeedsAnchorReview(item));
     setSheetInfo(item.spreadsheetId ? {
       spreadsheetId: item.spreadsheetId,
       spreadsheetName: item.spreadsheetName || "Spreadsheet",
@@ -561,6 +586,18 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setSheetConnection(item.spreadsheetId && item.sheetName ? { state: "checking", message: "接続を確認中…" } : { state: "idle", message: "" });
     setNotice(null);
     setSaved(true);
+  };
+
+  const repairSavedRule = (item: SavedRule) => {
+    const unsafeField = item.fields.find(extractionFieldNeedsSafetyReview);
+    applySavedRule(item, unsafeField?.id);
+    setNotice({
+      kind: "warning",
+      text: unsafeField
+        ? `「${unsafeField.name}」の取得位置を修正します。左のメール本文で取得したい値だけを選び、「選択中の…をこの設定に置き換える」を押してください。修正後は自動転記をONにして保存してください。`
+        : "取得位置を確認する項目が見つかりませんでした。各項目のプレビューを確認してください。",
+    });
+    scrollToRef(mailPreviewRef, 120);
   };
 
   useEffect(() => {
@@ -620,6 +657,8 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setSheetInfo(null);
     setSheetConnection({ state: "idle", message: "" });
     setGmailMessages([]);
+    setSelectedText("");
+    setSelectedTextStart(null);
     setAutoAdd(false);
     setTestStatus("idle");
     setSaved(false);
@@ -670,6 +709,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       },
     };
     const selected = templates[template];
+    const safeFields = detectFields(selected.body).map((item, index) => ({ ...item.rule, id: index + 1 }));
     setRuleId(null);
     setRuleName(selected.name);
     setSender("");
@@ -677,14 +717,16 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setConditionMode("subject");
     setEmailMeta({ subject: selected.subject, from: "notice@example.com" });
     setEmailBody(selected.body);
-    setRules(selected.fields);
-    setSelectedRuleId(selected.fields[0].id);
-    setMappings(Object.fromEntries(selected.fields.map((field) => [field.id, ""])));
+    setRules(safeFields);
+    setSelectedRuleId(safeFields[0]?.id ?? 0);
+    setMappings(Object.fromEntries(safeFields.map((field) => [field.id, ""])));
     setSpreadsheetInput("");
     setSheetName("");
     setSheetInfo(null);
     setSheetConnection({ state: "idle", message: "" });
     setGmailMessages([]);
+    setSelectedText("");
+    setSelectedTextStart(null);
     setAutoAdd(false);
     setTestStatus("idle");
     setSaved(false);
@@ -693,14 +735,18 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
 
   const updateRule = (patch: Partial<ExtractionRule>) => {
     markChanged();
-    setRules((current) => current.map((rule) => (rule.id === selectedRuleId ? { ...rule, ...patch } : rule)));
+    const touchesAnchor = ["name", "method", "start", "end", "aliases"].some((key) => Object.prototype.hasOwnProperty.call(patch, key));
+    const nextPatch = touchesAnchor && !Object.prototype.hasOwnProperty.call(patch, "anchorConfirmed")
+      ? { ...patch, anchorConfirmed: false }
+      : patch;
+    setRules((current) => current.map((rule) => (rule.id === selectedRuleId ? { ...rule, ...nextPatch } : rule)));
   };
 
   const addRule = () => {
     const id = Math.max(0, ...rules.map((rule) => rule.id)) + 1;
     const nextRule: ExtractionRule = { id, name: `項目${id}`, method: "after", start: "項目名：", end: "", pattern: "" };
     setRules((current) => [...current, nextRule]);
-    setMappings((current) => ({ ...current, [id]: sheetInfo?.headers[rules.length + 2]?.label ?? "" }));
+    setMappings((current) => ({ ...current, [id]: sheetInfo?.headers[rules.length + 2]?.column ?? "" }));
     setSelectedRuleId(id);
     markChanged();
   };
@@ -731,29 +777,59 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     scrollToRef(extractionRulesRef);
   };
 
-  const captureMailText = (text: string) => {
+  const captureMailText = ({ text, start }: { text: string; start: number }) => {
     const id = Math.max(0, ...rules.map((rule) => rule.id)) + 1;
-    const generated = ruleFromSelection(emailBody, text, id);
-    if (!generated) return;
+    const generated = ruleFromSelection(emailBody, text, id, "", start);
+    if (!generated) {
+      setSelectedText("");
+      setSelectedTextStart(null);
+      setNotice({ kind: "warning", text: "選んだ文字だけを別メールでも特定できる見出し・区切りが見つかりません。『氏名：山田太郎』のように、見出し直後の値だけを選んでください。" });
+      return;
+    }
     setSelectedText(text);
+    setSelectedTextStart(start);
     setSelectionName(generated.suggestedName);
     scrollToRef(selectionBuilderRef);
   };
 
   const addSelectedTextRule = () => {
     const id = Math.max(0, ...rules.map((rule) => rule.id)) + 1;
-    const generated = ruleFromSelection(emailBody, selectedText, id, selectionName);
+    const generated = ruleFromSelection(emailBody, selectedText, id, selectionName, selectedTextStart ?? undefined);
     if (!generated) {
-      setNotice({ kind: "warning", text: "選択箇所からルールを作れませんでした。値だけを選び直してください。" });
+      setNotice({ kind: "warning", text: "選択範囲と自動取得結果が一致しないため追加しませんでした。値の直前にある見出しを確認して選び直してください。" });
       return;
     }
     setRules((current) => [...current, generated.rule]);
     setMappings((current) => ({ ...current, [id]: "" }));
     setSelectedRuleId(id);
     setSelectedText("");
+    setSelectedTextStart(null);
     setSelectionName("");
     markChanged();
     setNotice({ kind: "success", text: `「${generated.rule.name}」を追加しました。取得条件は自動設定済みです。保存するとルールに反映されます。` });
+    window.getSelection()?.removeAllRanges();
+    scrollToRef(extractionRulesRef);
+  };
+
+  const replaceSelectedTextRule = () => {
+    if (!selectedRule) return;
+    const generated = ruleFromSelection(
+      emailBody,
+      selectedText,
+      selectedRule.id,
+      selectionName.trim() || selectedRule.name,
+      selectedTextStart ?? undefined,
+    );
+    if (!generated) {
+      setNotice({ kind: "warning", text: "選択範囲と自動取得結果が一致しないため置き換えませんでした。値の直前にある見出しを確認して選び直してください。" });
+      return;
+    }
+    setRules((current) => current.map((rule) => rule.id === selectedRule.id ? generated.rule : rule));
+    setSelectedText("");
+    setSelectedTextStart(null);
+    setSelectionName("");
+    markChanged();
+    setNotice({ kind: "success", text: `「${generated.rule.name}」の取得位置を、選択した文字から安全に設定し直しました。` });
     window.getSelection()?.removeAllRanges();
     scrollToRef(extractionRulesRef);
   };
@@ -920,6 +996,18 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     }
     if (!rules.length) {
       setNotice({ kind: "warning", text: "取得項目を1つ以上追加してから保存してください。" });
+      scrollToRef(extractionRulesRef);
+      return;
+    }
+    const unsafeAutomatic = rules.find(extractionFieldNeedsSafetyReview);
+    if (activeOverride && unsafeAutomatic) {
+      setSelectedRuleId(unsafeAutomatic.id);
+      setNotice({ kind: "warning", text: `「${unsafeAutomatic.name}」は自動転記に使えない旧形式の取得条件です。本文で正しい値だけを選び、「選択中の項目をこの設定に置き換える」を押してください。` });
+      scrollToRef(mailPreviewRef);
+      return;
+    }
+    if (activeOverride && !ruleId && hasMissingResult) {
+      setNotice({ kind: "warning", text: "プレビューで抽出できていない項目があります。すべての値を確認してから新着メールの自動転記をONにしてください。" });
       scrollToRef(extractionRulesRef);
       return;
     }
@@ -1150,17 +1238,18 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       {live && savedRules.length ? (
         <section ref={savedRulesRef} className="saved-rules-manager" aria-label="保存済みルール管理">
           <div className="saved-rules-manager__heading">
-            <div><span>SAVED RULES</span><strong>保存済みルール {savedRules.length}/10件</strong><small>自動転記ON {savedRules.filter((item) => item.active).length}/3件</small></div>
+            <div><span>SAVED RULES</span><strong>保存済みルール {savedRules.length}/10件</strong><small>自動転記ON {savedRules.filter((item) => item.active && !savedRuleNeedsAnchorReview(item)).length}/3件</small></div>
           </div>
           <div className="saved-rules-list">
             {savedRules.map((item) => {
               const health = ruleHealth(item);
+              const anchorReview = savedRuleNeedsAnchorReview(item);
               return (
                 <article className={ruleId === item.id ? "saved-rule-card is-selected" : "saved-rule-card"} key={item.id}>
                   <div className="saved-rule-card__main">
                     <div className="saved-rule-card__title">
                       <strong>{item.name}</strong>
-                      <span className={item.active ? "rule-status is-on" : "rule-status"}>{item.active ? "自動転記 ON" : "停止中"}</span>
+                      <span className={item.active && !anchorReview ? "rule-status is-on" : "rule-status"}>{item.active && !anchorReview ? "自動転記 ON" : anchorReview ? "安全確認のため停止" : "停止中"}</span>
                       <span className={`rule-health is-${health.tone}`}>{health.label}</span>
                     </div>
                     <p>{item.sender || "送信元指定なし"} ／ {item.subjectContains ? `件名「${item.subjectContains}」` : "件名指定なし"}</p>
@@ -1170,7 +1259,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                   <div className="saved-rule-card__actions">
                     <button type="button" onClick={() => applySavedRule(item)}>開く</button>
                     {item.active && auth?.gmailPushConfigured && !auth.gmailWatchActive ? <button type="button" onClick={() => void activateGmailWatch()}>監視開始</button> : null}
-                    <button type="button" onClick={() => void setStoredRuleActive(item, !item.active)}>{item.active ? "自動転記を停止" : "自動転記ON"}</button>
+                    {anchorReview ? <button type="button" onClick={() => repairSavedRule(item)}>取得位置を修正</button> : null}
+                    {anchorReview && item.active ? <button type="button" onClick={() => void setStoredRuleActive(item, false)}>自動転記を停止</button> : null}
+                    {!anchorReview ? <button type="button" onClick={() => void setStoredRuleActive(item, !item.active)}>{item.active ? "自動転記を停止" : "自動転記ON"}</button> : null}
                     <button type="button" className="is-danger" onClick={() => void deleteStoredRule(item)}>削除</button>
                   </div>
                 </article>
@@ -1233,20 +1324,24 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       <section className="rule-editor-grid" aria-labelledby="rules-title">
         <div ref={mailPreviewRef} className="mail-preview-pane">
           <div className="section-mini-heading"><span>02</span><div><small>SAMPLE MAIL</small><h3>メールを確認</h3></div></div>
-          <p className="selection-guide"><strong>本文中の値をドラッグして選択</strong><span>スマホは長押しで選べます。周囲の見出しから取得ルールを自動作成します。</span></p>
+          {selectedRule && extractionFieldNeedsSafetyReview(selectedRule) ? (
+            <p className="selection-guide"><strong>「{selectedRule.name}」の取得位置を修正</strong><span>下のメール本文で、実際に取得したい値だけを選んでください。表示される「選択中の…をこの設定に置き換える」を押すと修正できます。</span></p>
+          ) : (
+            <p className="selection-guide"><strong>本文中の値をドラッグして選択</strong><span>スマホは長押しで選べます。周囲の見出しから取得ルールを自動作成します。</span></p>
+          )}
           <EmailDocument body={emailBody} rules={rules} subject={emailMeta.subject} from={emailMeta.from} onTextSelect={captureMailText} />
           {selectedText ? (
             <div ref={selectionBuilderRef} className="selection-rule-builder" role="status">
               <span>選択した文字</span>
               <strong>{selectedText}</strong>
               <label><span>シートの項目名</span><input value={selectionName} onChange={(event) => setSelectionName(event.target.value)} placeholder="例：氏名、注文番号" /></label>
-              <div><button type="button" onClick={addSelectedTextRule} disabled={!selectionName.trim()}>この文字を取得項目にする</button><button type="button" className="is-cancel" onClick={() => { setSelectedText(""); setSelectionName(""); }}>キャンセル</button></div>
-              <small>値そのものではなく、前後の見出し・区切りから再利用できる取得条件を作ります。</small>
+              <div>{selectedRule ? <button type="button" onClick={replaceSelectedTextRule} disabled={!selectionName.trim()}>選択中の「{selectedRule.name}」をこの設定に置き換える</button> : null}<button type="button" className={selectedRule ? "is-secondary" : undefined} onClick={addSelectedTextRule} disabled={!selectionName.trim()}>新しい取得項目として追加</button><button type="button" className="is-cancel" onClick={() => { setSelectedText(""); setSelectedTextStart(null); setSelectionName(""); }}>キャンセル</button></div>
+              <small>値そのものや自由な正規表現は保存せず、前後の見出しと区切りを安全な取得位置として保存します。</small>
             </div>
           ) : null}
           <div className="detected-fields">
             <div className="detected-fields__heading"><div><strong>本文から見つかった項目</strong><small>クリックすると取得項目へ追加されます</small></div><button type="button" onClick={addAllDetectedFields} disabled={!detectedFields.length}>すべて追加</button></div>
-            {detectedFields.length ? <div className="detected-fields__list">{detectedFields.slice(0, 12).map((item, index) => <button type="button" key={`${item.name}-${index}`} onClick={() => addDetectedField(item)}><span>{item.name}</span><strong>{item.value}</strong><i>＋</i></button>)}</div> : <p className="detected-fields__empty">自動判定できる項目がありません。右側の「項目を追加」から指定できます。</p>}
+            {detectedFields.length ? <div className="detected-fields__list">{detectedFields.slice(0, 12).map((item, index) => <button type="button" key={`${item.name}-${index}`} onClick={() => addDetectedField(item)}><span>{item.name}</span><strong>{item.value}</strong><i>＋</i></button>)}</div> : <p className="detected-fields__empty">安全に自動判定できる項目がありません。本文で取得したい値だけを選択してください。</p>}
           </div>
           <details className="email-edit-details">
             <summary>{live ? "サンプル本文を手動で調整" : "サンプルメールを編集"}</summary>
@@ -1261,7 +1356,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           <section ref={extractionRulesRef} className="rule-list" role="list" aria-label="抽出項目一覧">
             {!rules.length ? <p className="rule-list-empty">取得項目はまだありません。本文から値を選択するか、下の「項目を追加」を押してください。</p> : null}
             {rules.map((rule, index) => {
-              const value = extractValue(emailBody, rule);
+              const value = extractValue(emailBody, rule, rules);
               return (
                 <div key={rule.id} data-rule-id={rule.id} className={selectedRuleId === rule.id ? "rule-list-item is-selected" : "rule-list-item"} role="listitem" onDragOver={(event) => event.preventDefault()} onDrop={() => dropRule(rule.id)}>
                   <span className="rule-drag-handle" draggable onDragStart={() => { draggedRuleId.current = rule.id; }} onDragEnd={() => { draggedRuleId.current = null; }} title="つかんで並び替え" aria-label={`${rule.name}をドラッグして並び替え`}>↕</span>
@@ -1282,15 +1377,22 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           {selectedRule ? (
             <div className="rule-form">
               <label><span>抽出項目名（自由入力）</span><input value={selectedRule.name} onChange={(event) => updateRule({ name: event.target.value })} placeholder="例：注文番号、予約日時、会社名、金額" /></label>
-              <label><span>取り出し方法</span><select value={selectedRule.method} onChange={(event) => updateRule({ method: event.target.value as ExtractionMethod })}>{Object.entries(methodLabels).map(([value, label]) => <option key={value} value={value} disabled={value === "regex"}>{label}</option>)}</select></label>
+              <label><span>値の種類 / 範囲の決め方</span><select value={selectedRule.method} onChange={(event) => {
+                const method = event.target.value as ExtractionMethod;
+                const resetAnchor = selectedRule.method === "between" || selectedRule.method === "regex";
+                updateRule({ method, start: method === "between" ? selectedRule.start : resetAnchor ? selectedRule.name : selectedRule.start, end: method === "between" ? selectedRule.end : "", pattern: method === "regex" ? selectedRule.pattern : "", locator: method === "regex" ? selectedRule.locator : undefined });
+              }}>{Object.entries(methodLabels).map(([value, label]) => <option key={value} value={value} disabled={value === "regex" || value === "between"}>{label}</option>)}</select></label>
               {selectedRule.method !== "regex" ? (
                 <div className="marker-fields">
-                  <label><span>{selectedRule.method === "between" ? "最初の文字" : "この文字の後ろ"}</span><input value={selectedRule.start} onChange={(event) => updateRule({ start: event.target.value })} /></label>
-                  {selectedRule.method === "between" ? <label><span>終わりの文字</span><input value={selectedRule.end} onChange={(event) => updateRule({ end: event.target.value })} /></label> : null}
+                  <label><span>{selectedRule.method === "between" ? "値の直前にある文字" : "項目を見分ける見出し"}</span><input value={selectedRule.start} onChange={(event) => updateRule({ start: event.target.value })} placeholder={selectedRule.method === "between" ? "例：【氏名】" : `例：${selectedRule.name || "氏名"}`} /></label>
+                  {selectedRule.method === "between" ? <label><span>値の直後にある文字</span><input value={selectedRule.end} onChange={(event) => updateRule({ end: event.target.value })} placeholder="例：【フリガナ】" /></label> : null}
+                  {selectedRule.method !== "between" ? <label><span>別の見出し <small>任意・読点区切り</small></span><input value={(selectedRule.aliases || []).join("、")} onChange={(event) => updateRule({ aliases: event.target.value.split(/[、,]/).map((value) => value.trim().slice(0, 100)).filter(Boolean).slice(0, 10) })} placeholder="例：お名前、応募者名" /></label> : null}
                 </div>
               ) : null}
-              <div className="live-result"><span>プレビュー</span><strong>{extractValue(emailBody, selectedRule) || "抽出できませんでした"}</strong><i className={extractValue(emailBody, selectedRule) ? "is-success" : "is-warning"}>{extractValue(emailBody, selectedRule) ? "✓" : "!"}</i></div>
-              {selectedRule.method === "regex" ? <p className="automatic-rule-note">本文で選択した位置から、取得条件を自動設定しています。</p> : null}
+              {selectedRule.method !== "regex" ? <p className="rule-safety-note">この詳細設定はプレビュー確認用です。新着メールの自動転記に使うには、左の本文で取得したい値だけを選び、この項目を安全な自動設定へ置き換えてください。</p> : null}
+              {selectedRule.method === "regex" && selectedRule.locator?.kind === "label" && !selectedRule.locator.innerLabel ? <label><span>この項目に使われる別の見出し <small>任意・読点区切り</small></span><input value={(selectedRule.aliases || []).join("、")} onChange={(event) => updateRule({ aliases: event.target.value.split(/[、,]/).map((value) => value.trim().slice(0, 100)).filter(Boolean).slice(0, 10) })} placeholder={`例：${selectedRule.name === "氏名" ? "お名前、応募者名" : `${selectedRule.name}の別表記`}`} /></label> : null}
+              <div className="live-result"><span>プレビュー</span><strong>{selectedExtraction?.value || "抽出できませんでした"}</strong><i className={selectedExtraction?.status === "ok" ? "is-success" : "is-warning"}>{selectedExtraction?.status === "ok" ? "✓" : "!"}</i>{selectedExtraction?.status !== "ok" ? <small className="live-result__reason">{selectedExtraction?.reason}</small> : null}</div>
+              {selectedRule.method === "regex" ? <p className="automatic-rule-note">本文で選んだ値の位置から安全に自動設定済みです。値や空白・改行が変わっても、同じ見出しと次の見出しの間だけを取得します。見出し構造が変わった場合や候補が複数ある場合は、推測せず「要確認」にします。</p> : null}
             </div>
           ) : null}
         </div>

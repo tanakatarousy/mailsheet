@@ -858,7 +858,7 @@ async function appendSheetRow(env, userId, inputId, sheetName, values) {
   const response = await googleFetch(
     env,
     userId,
-    `${SHEETS_API}/${encodeURIComponent(id)}/values/${range}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+    `${SHEETS_API}/${encodeURIComponent(id)}/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -923,20 +923,94 @@ async function handleSheetTest(request, env) {
   return json({ ok: true, updatedRange: result.updates?.updatedRange || "", updatedRows: result.updates?.updatedRows || 1 });
 }
 
-function normalizeField(field, index) {
+function normalizeSafeExtractionLocator(locator) {
+  if (!safeLocatorIsValid(locator)) return null;
+  if (locator.kind === "json") {
+    return { version: 2, kind: "json", path: [...locator.path], jsonType: locator.jsonType };
+  }
+  const signature = {
+    sampleBracketCount: locator.sampleBracketCount,
+    samplePlainLabelCount: locator.samplePlainLabelCount,
+    sampleBracketLabels: [...locator.sampleBracketLabels],
+    samplePlainLabels: [...locator.samplePlainLabels],
+    sampleDelimiterShape: [...locator.sampleDelimiterShape],
+    sampleValueType: locator.sampleValueType,
+  };
+  if (locator.kind === "label") {
+    return {
+      version: 2,
+      kind: "label",
+      label: locator.label,
+      ...(locator.innerLabel !== undefined ? { innerLabel: locator.innerLabel } : {}),
+      ...(locator.nextLabel !== undefined ? { nextLabel: locator.nextLabel } : {}),
+      ...(locator.suffix !== undefined ? { suffix: locator.suffix } : {}),
+      ...(locator.balancedEnd !== undefined ? { balancedEnd: locator.balancedEnd } : {}),
+      ...(locator.bracketed !== undefined ? { bracketed: locator.bracketed } : {}),
+      ...(locator.inline !== undefined ? { inline: locator.inline } : {}),
+      ...(locator.includeLabel !== undefined ? { includeLabel: locator.includeLabel } : {}),
+      ...(locator.nextLabelBracketed !== undefined ? { nextLabelBracketed: locator.nextLabelBracketed } : {}),
+      ...(locator.lineEnd !== undefined ? { lineEnd: locator.lineEnd } : {}),
+      sampleContextLabels: [...locator.sampleContextLabels],
+      ...signature,
+    };
+  }
+  if (locator.kind === "block") {
+    return {
+      version: 2,
+      kind: "block",
+      heading: locator.heading,
+      endHeading: locator.endHeading,
+      ...signature,
+    };
+  }
+  if (locator.kind === "qa") {
+    return {
+      version: 2,
+      kind: "qa",
+      question: locator.question,
+      qaBracketed: locator.qaBracketed,
+      ...signature,
+    };
+  }
+  return null;
+}
+
+function normalizeField(field, index, allowLegacyRegex = false) {
   const method = METHODS.has(field?.method) ? field.method : "after";
+  if (method === "between" && !allowLegacyRegex) {
+    throw new HttpError(400, "旧形式の範囲指定です。本文から取得したい値を選び直してください。", "unsafe_extraction_pattern");
+  }
+  const locatorWasProvided = field?.locator !== undefined && field?.locator !== null;
+  const locator = method === "regex" ? normalizeSafeExtractionLocator(field?.locator) : null;
+  if (method === "regex" && !locator && !(allowLegacyRegex && !locatorWasProvided)) {
+    throw new HttpError(400, "自動取得条件を安全に確認できません。本文から値を選び直してください。", "unsafe_extraction_pattern");
+  }
+  let aliases = [];
+  if (field?.aliases !== undefined) {
+    if (!Array.isArray(field.aliases) || field.aliases.length > 10
+      || field.aliases.some((value) => typeof value !== "string" || !value.trim() || value.trim().length > 100 || /[\r\n]/.test(value))) {
+      throw new HttpError(400, "同じ意味の見出しを安全に確認できません。入力内容を確認してください。", "invalid_extraction_aliases");
+    }
+    aliases = field.aliases.map((value) => value.trim());
+  }
   return {
     id: Number(field?.id) || index + 1,
     name: String(field?.name || `項目${index + 1}`).slice(0, 100),
     method,
     start: String(field?.start || "").slice(0, 500),
     end: String(field?.end || "").slice(0, 500),
-    pattern: String(field?.pattern || "").slice(0, 2_000),
+    pattern: "",
+    ...(locator ? { locator } : {}),
+    anchorConfirmed: Boolean(field?.anchorConfirmed),
+    aliases,
   };
 }
 
 function normalizeRuleBody(body) {
-  const fields = Array.isArray(body.fields) ? body.fields.slice(0, 50).map(normalizeField) : [];
+  const active = Boolean(body.active);
+  const fields = Array.isArray(body.fields)
+    ? body.fields.slice(0, 50).map((field, index) => normalizeField(field, index, body.active === false))
+    : [];
   if (!fields.length) throw new HttpError(400, "抽出項目を1つ以上追加してください。", "fields_required");
   return {
     id: Number(body.id) || null,
@@ -954,17 +1028,25 @@ function normalizeRuleBody(body) {
         }))
       : [],
     mappings: body.mappings && typeof body.mappings === "object" ? body.mappings : {},
-    active: Boolean(body.active),
+    active,
   };
 }
 
 function parseRuleRow(row) {
+  const storedFields = JSON.parse(row.fields_json || "[]");
   return {
     id: row.id,
     name: row.name,
     sender: row.sender,
     subjectContains: row.subject_contains,
-    fields: JSON.parse(row.fields_json || "[]"),
+    // A free-form start/end range cannot prove which repeated end marker is
+    // the real boundary. Return it as an unsafe automatic rule so the editor
+    // leads the user back to selecting the exact value in a sample mail.
+    fields: Array.isArray(storedFields) ? storedFields.map((field) => (
+      field?.method === "between"
+        ? { ...field, method: "regex", pattern: "", locator: undefined, anchorConfirmed: false }
+        : field
+    )) : [],
     spreadsheetId: row.spreadsheet_id,
     spreadsheetName: row.spreadsheet_name,
     sheetName: row.sheet_name,
@@ -1006,6 +1088,10 @@ async function handleRuleSave(request, env) {
   const db = requireDb(env);
   let gmailWatch = null;
   if (body.active) {
+    const unsafeField = body.fields.find((field) => field.method !== "regex" || !safeLocatorIsValid(field.locator));
+    if (unsafeField) {
+      throw new HttpError(400, `「${unsafeField.name}」は旧形式の取得条件です。本文から取得したい値を選び直してください。`, "unsafe_extraction_pattern");
+    }
     if (!gmailPushConfigured(env)) {
       throw new HttpError(503, "Gmail受信通知が未設定のため、新着メールの自動転記をONにできません。管理画面でPub/Sub設定を確認してください。", "gmail_push_not_configured");
     }
@@ -1153,46 +1239,724 @@ async function handleRuleDelete(request, env, ruleId) {
   return json({ ok: true });
 }
 
-function firstLine(value) {
-  return String(value || "").split(/\r?\n/)[0]?.trim() || "";
+const cleanAnchorLabel = (value) => value.normalize("NFKC").trim().replace(/^[\s*#・■□◇◆【\u005b「『]+/, "").replace(/\s*(?:：|:|＞|＝＞|=>|->|=|＝)\s*$/, "").replace(/[】\]」』\s*]+$/, "").replace(/[\s\u3000]+/g, "").trim();
+const semanticLabel = (value) => cleanAnchorLabel(value).toLowerCase();
+const safeAliases = (rule) => Array.isArray(rule.aliases) ? rule.aliases.filter((value) => typeof value === "string" && Boolean(value.trim()) && value.trim().length <= 100 && !/[\r\n]/.test(value)).map((value) => value.trim()).slice(0, 10) : [];
+const extractionAliasesAreValid = (rule) => rule.aliases === void 0 || Array.isArray(rule.aliases) && rule.aliases.length <= 10 && rule.aliases.every((value) => typeof value === "string" && Boolean(value.trim()) && value.trim().length <= 100 && !/[\r\n]/.test(value));
+function extractionAnchorMatchesName(rule) {
+  if (rule.method === "regex") return true;
+  const name = semanticLabel(rule.name);
+  if (!name) return false;
+  return [rule.start, ...safeAliases(rule)].some((value) => {
+    const rawMarker = String(value || "").trim();
+    const pairedOpeners = { "\u3010": "\u3011", "[": "]", "\uFF08": "\uFF09", "(": ")", "\u300C": "\u300D", "\u300E": "\u300F" };
+    const trailingOpener = rule.method === "between" ? rawMarker.at(-1) || "" : "";
+    const markerSource = trailingOpener && pairedOpeners[trailingOpener] === String(rule.end || "").trim() ? rawMarker.slice(0, -1) : rawMarker;
+    const marker = semanticLabel(markerSource);
+    if (!marker) return false;
+    return marker === name;
+  });
 }
-
-function valueAfter(body, marker) {
-  if (!marker) return "";
-  const index = body.indexOf(marker);
-  return index < 0 ? "" : firstLine(body.slice(index + marker.length));
+function extractionAnchorIsAccepted(rule) {
+  return rule.method === "regex" || rule.anchorConfirmed === true || extractionAnchorMatchesName(rule);
 }
-
-function extractValue(body, rule) {
-  const scope = rule.start ? valueAfter(body, rule.start) : body;
-  if (rule.method === "after") return valueAfter(body, rule.start);
-  if (rule.method === "between") {
-    if (!rule.start || !rule.end) return "";
-    const index = body.indexOf(rule.start);
-    if (index < 0) return "";
-    const rest = body.slice(index + rule.start.length);
-    const end = rest.indexOf(rule.end);
-    return end < 0 ? "" : rest.slice(0, end).trim();
+function standardQuoteDepth(body, index) {
+  const lineStart = body.lastIndexOf("\n", Math.max(0, index - 1)) + 1;
+  const prefix = body.slice(lineStart, index);
+  if (!/^[ \t]*(?:>[ \t]*)+$/.test(prefix)) return 0;
+  return Array.from(prefix).filter((character) => character === ">").length;
+}
+function exactMatches(body, marker) {
+  const matches = [];
+  let from = 0;
+  while (marker && from <= body.length) {
+    const index = body.indexOf(marker, from);
+    if (index < 0) break;
+    matches.push({ index, end: index + marker.length });
+    from = index + Math.max(1, marker.length);
   }
-  if (rule.method === "number") return scope.match(/[+-]?(?:\d[\d,]*)(?:\.\d+)?/)?.[0] || "";
-  if (rule.method === "money") return scope.match(/(?:¥|￥)?\s?\d[\d,]*(?:円)?/)?.[0]?.trim() || "";
-  if (rule.method === "date") {
-    return scope.match(/\d{4}[/-]\d{1,2}[/-]\d{1,2}(?:\s+\d{1,2}:\d{2})?/)?.[0]
-      || scope.match(/\d{1,2}月\d{1,2}日(?:\s+\d{1,2}:\d{2})?/)?.[0]
-      || "";
+  return matches;
+}
+function hasLabelBoundary(body, index) {
+  if (index === 0) return true;
+  const previous = body[index - 1] || "";
+  return /[\n\r｜|\t\u3000■□◇◆#*・]/u.test(previous) || previous === " " && body[index - 2] === " " || standardQuoteDepth(body, index) > 0;
+}
+function hasStructuredMarker(marker) {
+  return /^[【\u005b]/.test(marker.trim()) || /(?:：|:|＞|＝＞|=>|->|=|＝)/.test(marker);
+}
+const LABEL_SEPARATOR_PATTERN = /＝＞|=>|->|：|:|＞|=|＝/gmu;
+const LABEL_SEPARATORS = ["\uFF1D\uFF1E", "=>", "->", "\uFF1A", ":", "\uFF1E", "=", "\uFF1D"];
+function markerLookup(markers) {
+  const lookup = /* @__PURE__ */ new Map();
+  for (const marker of markers) {
+    const semantic = semanticLabel(marker);
+    if (semantic && !lookup.has(semantic)) lookup.set(semantic, marker);
   }
-  if (rule.method === "email") return scope.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || "";
-  if (rule.method === "phone") return scope.match(/(?:0\d{1,4}[-ー－]?\d{1,4}[-ー－]?\d{3,4})/)?.[0] || "";
-  if (rule.method === "regex" && rule.pattern) {
-    try {
-      const match = new RegExp(rule.pattern, "m").exec(body);
-      return match?.[1] || match?.[0] || "";
-    } catch {
-      return "";
+  return lookup;
+}
+function reverseLabelTrie(markers) {
+  const root = { next: /* @__PURE__ */ new Map() };
+  for (const [semantic, label] of markerLookup(markers)) {
+    let node = root;
+    for (const character of Array.from(semantic).reverse()) {
+      const child = node.next.get(character) || { next: /* @__PURE__ */ new Map() };
+      node.next.set(character, child);
+      node = child;
+    }
+    node.label = label;
+  }
+  return root;
+}
+function formattedLabelsMatch(body, markers) {
+  const matches = bracketLabelsMatchAnywhere(body, markers).filter((match) => hasLabelBoundary(body, match.index));
+  matches.push(...plainStructuralLabelsMatch(body, markers, 0, body.length, "formatted"));
+  return uniqueLabelMatches(matches);
+}
+function formattedLabelMatches(body, marker) {
+  return formattedLabelsMatch(body, [marker]);
+}
+function bracketLabelsMatchAnywhere(body, markers) {
+  const lookup = markerLookup(markers);
+  if (!lookup.size) return [];
+  const matches = [];
+  for (let index = 0; index < body.length; index += 1) {
+    const opener = body[index];
+    const closer = opener === "\u3010" ? "\u3011" : opener === "[" ? "]" : "";
+    if (!closer) continue;
+    const limit = Math.min(body.length, index + 122);
+    let close = index + 1;
+    while (close < limit && body[close] !== closer && !/[\r\n【[]/.test(body[close] || "")) close += 1;
+    if (close >= limit || body[close] !== closer || close === index + 1) continue;
+    const label = lookup.get(semanticLabel(body.slice(index + 1, close)));
+    if (!label) {
+      index = close;
+      continue;
+    }
+    let end = close + 1;
+    while (/[ \t\u3000]/.test(body[end] || "")) end += 1;
+    const separator = LABEL_SEPARATORS.find((part) => body.startsWith(part, end));
+    if (separator) {
+      end += separator.length;
+      while (/[ \t\u3000]/.test(body[end] || "")) end += 1;
+    }
+    matches.push({ index, end, label });
+    index = close;
+  }
+  return matches;
+}
+function bracketLabelMatchesAnywhere(body, marker) {
+  return bracketLabelsMatchAnywhere(body, [marker]);
+}
+function labelStartBeforeSeparator(body, trie, from, separatorIndex, mode) {
+  let node = trie;
+  let index = separatorIndex - 1;
+  while (index >= from && /[ \t\u3000]/.test(body[index] || "")) index -= 1;
+  let trailingStars = 0;
+  while (index >= from && body[index] === "*" && trailingStars < 2) {
+    trailingStars += 1;
+    index -= 1;
+  }
+  let significant = 0;
+  while (index >= from && significant < 100) {
+    const character = body[index];
+    if (/[ \t\u3000]/.test(character || "")) {
+      index -= 1;
+      continue;
+    }
+    const normalized = character.normalize("NFKC").toLowerCase();
+    if (normalized.length !== 1) return null;
+    const child = node.next.get(normalized);
+    if (!child) return null;
+    node = child;
+    significant += 1;
+    index -= 1;
+    if (node.label) {
+      let start = index + 1;
+      let prefix = index;
+      let leadingStars = 0;
+      while (prefix >= from && body[prefix] === "*" && leadingStars < 2) {
+        leadingStars += 1;
+        start = prefix;
+        prefix -= 1;
+      }
+      if (start === from) return { start, label: node.label };
+      const previous = body[start - 1] || "";
+      const inlineBoundary = /[\n\r \t\u3000｜|／/;；,，、■□◇◆#*・]/u.test(previous);
+      const formattedBoundary = /[\n\r｜|\t\u3000■□◇◆#*・]/u.test(previous) || previous === " " && body[start - 2] === " " || standardQuoteDepth(body, start) > 0;
+      if (mode === "inline" ? inlineBoundary : formattedBoundary) return { start, label: node.label };
+    }
+  }
+  return null;
+}
+function uniqueLabelMatches(matches) {
+  const unique = /* @__PURE__ */ new Map();
+  for (const match of matches) {
+    const current = unique.get(match.index);
+    if (!current || match.end > current.end) unique.set(match.index, match);
+  }
+  return [...unique.values()].sort((left, right) => left.index - right.index);
+}
+function plainStructuralLabelsMatch(body, markers, from, to, mode) {
+  const trie = reverseLabelTrie(markers);
+  if (!trie.next.size || from >= to) return [];
+  const matches = [];
+  const scope = body.slice(from, to);
+  LABEL_SEPARATOR_PATTERN.lastIndex = 0;
+  for (const separator of scope.matchAll(LABEL_SEPARATOR_PATTERN)) {
+    const separatorIndex = from + (separator.index ?? 0);
+    const matched = labelStartBeforeSeparator(body, trie, from, separatorIndex, mode);
+    if (!matched) continue;
+    let end = separatorIndex + separator[0].length;
+    while (end < to && /[ \t\u3000]/.test(body[end] || "")) end += 1;
+    matches.push({ index: matched.start, end, label: matched.label });
+  }
+  return uniqueLabelMatches(matches);
+}
+function plainStructuralMatches(body, marker, from, to, mode) {
+  return plainStructuralLabelsMatch(body, [marker], from, to, mode);
+}
+function plainLabelMatchesAfter(body, marker, from, to) {
+  return plainStructuralMatches(body, marker, from, to, "inline");
+}
+function findRuleAnchors(body, rule) {
+  const markers = [rule.start, ...safeAliases(rule)].map((value) => String(value || "").trim()).filter(Boolean);
+  const formatted = formattedLabelsMatch(body, markers);
+  const candidates = formatted.length ? formatted : markers.flatMap((marker) => hasStructuredMarker(marker) ? exactMatches(body, marker).filter((match) => hasLabelBoundary(body, match.index)) : []);
+  const unique = /* @__PURE__ */ new Map();
+  for (const match of candidates) {
+    const current = unique.get(match.index);
+    if (!current || match.end > current.end) unique.set(match.index, match);
+  }
+  return [...unique.values()].sort((left, right) => left.index - right.index);
+}
+function fieldValueAfter(body, end, rule, allRules) {
+  let valueStart = end;
+  while (/[ \t]/.test(body[valueStart] || "")) valueStart += 1;
+  while (body[valueStart] === "\n") {
+    valueStart += 1;
+    while (/[ \t]/.test(body[valueStart] || "")) valueStart += 1;
+  }
+  const lineEnd = body.indexOf("\n", valueStart) < 0 ? body.length : body.indexOf("\n", valueStart);
+  let boundary = lineEnd;
+  for (const token of ["\uFF5C", "|"]) {
+    const index = body.indexOf(token, valueStart);
+    if (index >= valueStart && index < lineEnd) boundary = Math.min(boundary, index);
+  }
+  const searchEnd = Math.min(lineEnd, valueStart + 501);
+  const candidateWindow = body.slice(valueStart, searchEnd);
+  for (const otherRule of allRules) {
+    if (otherRule === rule || otherRule.id === rule.id || otherRule.method === "regex" || otherRule.method === "between") continue;
+    const markers = [otherRule.start, ...safeAliases(otherRule)].map((marker) => String(marker || "").trim()).filter(Boolean);
+    const configuredAnchors = [
+      ...bracketLabelsMatchAnywhere(candidateWindow, markers),
+      ...plainStructuralLabelsMatch(candidateWindow, markers, 0, candidateWindow.length, "inline")
+    ].map((anchor) => ({ ...anchor, index: valueStart + anchor.index, end: valueStart + anchor.end }));
+    for (const anchor of configuredAnchors) {
+      if (anchor.index >= valueStart && anchor.index < boundary) {
+        let adjusted = anchor.index;
+        while (adjusted > valueStart && /[ \t\u3000]/.test(body[adjusted - 1])) adjusted -= 1;
+        if (adjusted > valueStart && /[｜|／/;；,，、]/.test(body[adjusted - 1])) adjusted -= 1;
+        boundary = adjusted;
+      }
+    }
+  }
+  return body.slice(valueStart, boundary).trim();
+}
+function candidateLengthIssue(value) {
+  if (value.length > 500) return "\u53D6\u5F97\u7BC4\u56F2\u304C\u9577\u3059\u304E\u307E\u3059\u3002\u5024\u306E\u76F4\u524D\u306E\u898B\u51FA\u3057\u3068\u3001\u7D42\u308F\u308A\u306E\u4F4D\u7F6E\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+  return "";
+}
+function unboundedCandidateIssue(value) {
+  const lengthIssue = candidateLengthIssue(value);
+  if (lengthIssue) return lengthIssue;
+  const structuralLabels = [...value.matchAll(/(?:【[^】\n]{1,80}】|\[[^\]\n]{1,80}\])/g)];
+  if (structuralLabels.length) {
+    return "\u6B21\u306E\u9805\u76EE\u3068\u306E\u5883\u754C\u3092\u5224\u5B9A\u3067\u304D\u307E\u305B\u3093\u3002\u672C\u6587\u304B\u3089\u5024\u3060\u3051\u3092\u9078\u3073\u76F4\u3059\u304B\u30012\u3064\u306E\u6587\u5B57\u3067\u7BC4\u56F2\u3092\u6307\u5B9A\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+  }
+  const possiblePlainLabel = /(?:^|[\n \t\u3000]+|[／/;；,，、])(?:[*#・■□◇◆]+\s*)?([\p{L}][\p{L}\p{N}_・\- \t\u3000]{0,30}?)\s*(?:：|:|＞|＝＞|=>|->)/gmu;
+  for (const match of value.matchAll(possiblePlainLabel)) {
+    const label = String(match[1] || "").replace(/[\s\u3000]+/g, "").toLowerCase();
+    if (!/^(?:https?|mailto)$/.test(label)) {
+      return "\u6B21\u306E\u9805\u76EE\u3068\u306E\u5883\u754C\u3092\u5224\u5B9A\u3067\u304D\u307E\u305B\u3093\u3002\u7D9A\u304F\u9805\u76EE\u3082\u8FFD\u52A0\u3059\u308B\u304B\u3001\u672C\u6587\u304B\u3089\u5024\u3060\u3051\u3092\u9078\u3073\u76F4\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
     }
   }
   return "";
 }
+function boundedCandidateIssue(value) {
+  const lengthIssue = candidateLengthIssue(value);
+  if (lengthIssue) return lengthIssue;
+  if (/(?:^|\n)[ \t\u3000]*(?:【[^】\n]{1,80}】|\[[^\]\n]{1,80}\]|[■◆]|#{1,6}[ \t]|━{4,}|-{5,})/.test(value)) {
+    return "\u6307\u5B9A\u3057\u305F\u7BC4\u56F2\u306B\u5225\u306E\u9805\u76EE\u304C\u542B\u307E\u308C\u3066\u3044\u307E\u3059\u3002\u958B\u59CB\u6587\u5B57\u3068\u7D42\u308F\u308A\u306E\u6587\u5B57\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+  }
+  return "";
+}
+const DELIMITER_PAIRS = {
+  "(": { close: ")", token: "()" },
+  "\uFF08": { close: "\uFF09", token: "\uFF08\uFF09" },
+  "\u3010": { close: "\u3011", token: "\u3010\u3011" },
+  "[": { close: "]", token: "[]" },
+  "\u300C": { close: "\u300D", token: "\u300C\u300D" },
+  "\u300E": { close: "\u300F", token: "\u300E\u300F" },
+  "\u3008": { close: "\u3009", token: "\u3008\u3009" },
+  "\u201C": { close: "\u201D", token: "\u201C\u201D" },
+  "\u2018": { close: "\u2019", token: "\u2018\u2019" }
+};
+const DELIMITER_CLOSERS = new Map(Object.entries(DELIMITER_PAIRS).map(([open, pair]) => [pair.close, { open, token: pair.token }]));
+const BALANCED_ENDS = new Set(Object.values(DELIMITER_PAIRS).map(({ token }) => token));
+function delimiterShape(value) {
+  const stack = [];
+  const shape = [];
+  for (const character of value) {
+    const opener = DELIMITER_PAIRS[character];
+    if (opener) {
+      stack.push(opener);
+      shape.push(opener.token);
+      continue;
+    }
+    const closer = DELIMITER_CLOSERS.get(character);
+    if (!closer) continue;
+    const expected = stack.pop();
+    if (!expected || expected.close !== character) return null;
+    shape.push(`/${expected.token}`);
+  }
+  return stack.length ? null : shape;
+}
+function exactMoneyValue(value) {
+  return /^(?:(?:¥|￥)\s?[+-]?\d[\d,]*(?:\.\d+)?|[+-]?\d[\d,]*(?:\.\d+)?\s*円)(?:\s*[（(][^()（）\r\n]{0,40}[）)])?$/.test(value.normalize("NFKC").trim());
+}
+function inferSampleValueType(value) {
+  const candidate = value.normalize("NFKC").trim();
+  if (typedValue(candidate, "email")) return "email";
+  if (typedValue(candidate, "phone")) return "phone";
+  if (typedValue(candidate, "date")) return "date";
+  if (/[¥￥]|円/u.test(candidate) && exactMoneyValue(candidate)) return "money";
+  if (typedValue(candidate, "number")) return "number";
+  return "text";
+}
+function valueMatchesSampleType(value, type) {
+  if (type === "text") return true;
+  if (type === "money") return exactMoneyValue(value);
+  return Boolean(typedValue(value, type));
+}
+function signatureFor(value) {
+  const shape = delimiterShape(value);
+  if (!shape) return null;
+  return {
+    sampleBracketCount: structuralBracketCount(value),
+    samplePlainLabelCount: structuralPlainLabelCount(value),
+    sampleBracketLabels: structuralBracketLabels(value),
+    samplePlainLabels: structuralPlainLabels(value),
+    sampleDelimiterShape: shape,
+    sampleValueType: inferSampleValueType(value)
+  };
+}
+function safeLocatorIsValid(locator) {
+  if (!locator || typeof locator !== "object" || Array.isArray(locator) || locator.version !== 2) return false;
+  const raw = locator;
+  if (Object.prototype.hasOwnProperty.call(raw, "genericEnd")) return false;
+  const textIsSafe = (value, required = false, maxLength = 500) => {
+    if (value === void 0 || value === null) return !required;
+    if (typeof value !== "string") return false;
+    return (!required || Boolean(value.trim())) && value.length <= maxLength && !/[\r\n]/.test(value);
+  };
+  const booleanFlagsAreSafe = ["bracketed", "inline", "includeLabel", "nextLabelBracketed", "lineEnd", "qaBracketed"].every((key) => {
+    const value = locator[key];
+    return value === void 0 || typeof value === "boolean";
+  });
+  if (!booleanFlagsAreSafe) return false;
+  const bracketCountIsSafe = Number.isInteger(locator.sampleBracketCount) && Number(locator.sampleBracketCount) >= 0 && Number(locator.sampleBracketCount) <= 50;
+  const plainLabelCountIsSafe = Number.isInteger(locator.samplePlainLabelCount) && Number(locator.samplePlainLabelCount) >= 0 && Number(locator.samplePlainLabelCount) <= 50;
+  const signatureIsSafe = (value) => Array.isArray(value) && value.length <= 50 && value.every((part) => textIsSafe(part, true, 100));
+  const shapeIsSafe = Array.isArray(locator.sampleDelimiterShape) && locator.sampleDelimiterShape.length <= 100 && locator.sampleDelimiterShape.every((part) => typeof part === "string" && /^(?:\/?(?:\(\)|（）|【】|\[\]|「」|『』|〈〉|“”|‘’))$/.test(part));
+  const valueTypeIsSafe = ["text", "number", "money", "date", "email", "phone"].includes(String(locator.sampleValueType || ""));
+  const contextLabelsAreSafe = Array.isArray(locator.sampleContextLabels) && locator.sampleContextLabels.length >= 1 && locator.sampleContextLabels.length <= 4 && locator.sampleContextLabels[0] === "@anchor" && locator.sampleContextLabels.slice(1).every((part) => typeof part === "string" && /^(?:b|p):[^\r\n]{1,100}$/.test(part));
+  const commonSignatureIsSafe = bracketCountIsSafe && plainLabelCountIsSafe && signatureIsSafe(locator.sampleBracketLabels) && signatureIsSafe(locator.samplePlainLabels) && locator.sampleBracketLabels.length === locator.sampleBracketCount && locator.samplePlainLabels.length === locator.samplePlainLabelCount && shapeIsSafe && valueTypeIsSafe;
+  if (locator.kind === "label") {
+    const boundaries = [locator.lineEnd === true, Boolean(locator.nextLabel), Boolean(locator.suffix), Boolean(locator.balancedEnd)].filter(Boolean).length;
+    return textIsSafe(locator.label, true, 100) && textIsSafe(locator.innerLabel, false, 100) && textIsSafe(locator.nextLabel, false, 100) && textIsSafe(locator.suffix, false, 100) && commonSignatureIsSafe && contextLabelsAreSafe && (locator.balancedEnd === void 0 || BALANCED_ENDS.has(locator.balancedEnd)) && (!locator.includeLabel || locator.bracketed === true) && !(locator.sampleValueType === "text" && (locator.lineEnd === true || Boolean(locator.suffix))) && boundaries === 1;
+  }
+  if (locator.kind === "block") return textIsSafe(locator.heading, true) && textIsSafe(locator.endHeading, true) && commonSignatureIsSafe;
+  if (locator.kind === "json") return Array.isArray(locator.path) && locator.path.length > 0 && locator.path.length <= 20 && locator.path.every((part) => textIsSafe(part, true, 100) && !/^(?:0|[1-9]\d*)$/.test(part)) && ["string", "number", "boolean"].includes(String(locator.jsonType || ""));
+  return locator.kind === "qa" && textIsSafe(locator.question, true) && typeof locator.qaBracketed === "boolean" && commonSignatureIsSafe;
+}
+function extractionLocatorIsSafe(locator) {
+  return safeLocatorIsValid(locator);
+}
+function proseCandidateIssue(value) {
+  const candidate = String(value || "").normalize("NFKC").trim();
+  const proseSurface = candidate.replace(/“[^”\r\n]*”|‘[^’\r\n]*’|〈[^〉\r\n]*〉|「[^」\r\n]*」|『[^』\r\n]*』/gu, " ").trim();
+  const instruction = /^(?:とは|には|について|の(?:意味|説明)|は(?:必須|任意|必要|不要|入力|記入|選択|確認|設定|保存|送信|表示|使用|利用)|が(?:必須|必要|不要)|を(?:指す|ご?(?:入力|記入|選択|確認|設定|保存|送信|参照|使用|利用))|欄(?:には|へ|に|を)|(?:へ|に)(?:ご?(?:入力|記入|選択|設定))|なら(?:省略|入力|記入|選択|不要|任意)|という(?:表記|意味|項目|名称|説明)|と(?:表示|記載)|や$|または$)/u;
+  const explanatorySentence = /^は.+(?:です|ます|必要|任意)(?:[。.!！]|$)/u;
+  const requestSentence = /(?:入力|記入|選択|設定|保存|送信|確認|参照)(?:を)?(?:して)?(?:ください|下さい)(?:[。.!！]|$)/u;
+  const genericExplanation = /^(?:(?:応募者|申込者|注文者|予約者|利用者|顧客|お客様)の)?(?:氏名|名前|メール(?:アドレス)?|電話番号|住所)(?:です|となります|を表します)(?:[。.!！]|$)/u;
+  const missingMarker = /^(?:未入力|未記入|未設定|不明|なし|無し|該当なし|N\/?A|[-ー―—])(?:[。.!！]|$)/iu;
+  return instruction.test(proseSurface) || explanatorySentence.test(proseSurface) || requestSentence.test(proseSurface) || genericExplanation.test(proseSurface) || missingMarker.test(candidate) ? "\u8AAC\u660E\u6587\u4E2D\u306E\u898B\u51FA\u3057\u306B\u898B\u3048\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" : "";
+}
+function skipHorizontalSpace(body, from) {
+  let index = from;
+  while (/[ \t\u3000]/.test(body[index] || "")) index += 1;
+  return index;
+}
+function positionAfterInnerLabel(body, from, label) {
+  let index = skipHorizontalSpace(body, from);
+  const opener = body[index];
+  const closer = opener === "\u3010" ? "\u3011" : opener === "[" ? "]" : "";
+  if (!closer) return -1;
+  const close = body.indexOf(closer, index + 1);
+  if (close < 0 || semanticLabel(body.slice(index + 1, close)) !== semanticLabel(label)) return -1;
+  index = skipHorizontalSpace(body, close + 1);
+  for (const separator of ["\uFF1D\uFF1E", "=>", "->", "\uFF1A", ":", "\uFF1E", "=", "\uFF1D"]) {
+    if (!body.startsWith(separator, index)) continue;
+    index = skipHorizontalSpace(body, index + separator.length);
+    break;
+  }
+  return index;
+}
+function structuralBracketCount(value) {
+  return Array.from(value.matchAll(/【[^】\r\n]{1,80}】|\[[^\]\r\n]{1,80}\]/g)).length;
+}
+function structuralBracketLabels(value) {
+  return Array.from(value.matchAll(/【([^】\r\n]{1,80})】|\[([^\]\r\n]{1,80})\]/g), (match) => semanticLabel(match[1] || match[2] || ""));
+}
+function structuralLabelTokens(value) {
+  const bracketTokens = Array.from(value.matchAll(/【([^】\r\n]{1,80})】|\[([^\]\r\n]{1,80})\]/g), (match) => ({
+    index: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+    signature: `b:${semanticLabel(match[1] || match[2] || "")}`
+  })).filter((token) => token.signature.length > 2 && token.signature.length <= 102);
+  const possible = /(?:^|[\n \t\u3000]+|[／/;；,，、])(?:[*#・■□◇◆]+[ \t\u3000]*)*([\p{L}][\p{L}\p{N}_・\- \t\u3000]{0,30}?)\s*(?:\*{1,2}\s*)?(?:：|:|＞|＝＞|=>|->|=|＝)/gmu;
+  const plainTokens = [];
+  for (const match of value.matchAll(possible)) {
+    const label = String(match[1] || "").replace(/[\s\u3000]+/g, "").toLowerCase();
+    if (!label || label.length > 100 || /^(?:https?|mailto)$/.test(label)) continue;
+    const offset = match[0].lastIndexOf(String(match[1] || ""));
+    const index = (match.index ?? 0) + Math.max(0, offset);
+    const end = index + String(match[1] || "").length;
+    if (bracketTokens.some((token) => index >= token.index && index < token.end)) continue;
+    plainTokens.push({ index, end, signature: `p:${label}` });
+  }
+  return [...bracketTokens, ...plainTokens].sort((left, right) => left.index - right.index || right.end - left.end).filter((token, index, tokens) => index === 0 || token.index !== tokens[index - 1].index);
+}
+function structuralPlainLabels(value) {
+  return structuralLabelTokens(value).filter((token) => token.signature.startsWith("p:")).map((token) => token.signature.slice(2));
+}
+function structuralPlainLabelCount(value) {
+  return structuralPlainLabels(value).length;
+}
+function structuralContextLabels(body, anchorEnd) {
+  const window = body.slice(anchorEnd, Math.min(body.length, anchorEnd + 2e3));
+  return ["@anchor", ...structuralLabelTokens(window).slice(0, 3).map((token) => token.signature)];
+}
+function stripQuotedCandidate(value, quoteDepth) {
+  const trimmed = value.trim();
+  if (quoteDepth <= 0 || !trimmed.includes("\n")) return { value: trimmed, issue: "" };
+  const lines = trimmed.split("\n");
+  for (let lineIndex = 1; lineIndex < lines.length; lineIndex += 1) {
+    let index = 0;
+    while (/[ \t]/.test(lines[lineIndex][index] || "")) index += 1;
+    for (let depth = 0; depth < quoteDepth; depth += 1) {
+      if (lines[lineIndex][index] !== ">") return { value: "", issue: "引用行の形式が途中で変わったため、自動転記しません。" };
+      index += 1;
+      if (lines[lineIndex][index] === " ") index += 1;
+    }
+    lines[lineIndex] = lines[lineIndex].slice(index);
+  }
+  return { value: lines.join("\n").trim(), issue: "" };
+}
+function unbalancedDelimiterIssue(value) {
+  return delimiterShape(value) ? "" : "\u5024\u306E\u62EC\u5F27\u304C\u5BFE\u5FDC\u3057\u3066\u3044\u306A\u3044\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002";
+}
+function structuredLeadingLine(line) {
+  const value = String(line || "").trim();
+  if (!value) return false;
+  if (/^(?:━{4,}|-{5,}|[■◆]|#{1,6}(?:\s|$))/.test(value)) return true;
+  if (/^(?:【[^】\r\n]{1,120}】|\[[^\]\r\n]{1,120}\])(?:\s*(?:：|:|＞|＝＞|=>|->|=|＝))?/.test(value)) return true;
+  return /^(?:[-*・]\s*)?[^\r\n：:＞=]{1,120}?\s*(?:：|:|＞|＝＞|=>|->|=|＝)/u.test(value);
+}
+function extractedSignatureIssue(value, locator) {
+  if (structuralBracketCount(value) !== locator.sampleBracketCount) {
+    return "\u30B5\u30F3\u30D7\u30EB\u3068\u62EC\u5F27\u9805\u76EE\u306E\u69CB\u9020\u304C\u5909\u308F\u3063\u305F\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002";
+  }
+  if (structuralPlainLabelCount(value) !== locator.samplePlainLabelCount) {
+    return "\u30B5\u30F3\u30D7\u30EB\u3068\u9805\u76EE\u306E\u533A\u5207\u308A\u69CB\u9020\u304C\u5909\u308F\u3063\u305F\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002";
+  }
+  if (JSON.stringify(structuralBracketLabels(value)) !== JSON.stringify(locator.sampleBracketLabels)) {
+    return "\u30B5\u30F3\u30D7\u30EB\u3068\u62EC\u5F27\u5185\u306E\u898B\u51FA\u3057\u304C\u5909\u308F\u3063\u305F\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002";
+  }
+  if (JSON.stringify(structuralPlainLabels(value)) !== JSON.stringify(locator.samplePlainLabels)) {
+    return "\u30B5\u30F3\u30D7\u30EB\u3068\u9805\u76EE\u540D\u306E\u69CB\u9020\u304C\u5909\u308F\u3063\u305F\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002";
+  }
+  const shape = delimiterShape(value);
+  if (!shape) return "\u5024\u306E\u62EC\u5F27\u304C\u5BFE\u5FDC\u3057\u3066\u3044\u306A\u3044\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002";
+  if (JSON.stringify(shape) !== JSON.stringify(locator.sampleDelimiterShape)) return "\u30B5\u30F3\u30D7\u30EB\u3068\u62EC\u5F27\u30FB\u5F15\u7528\u7B26\u306E\u69CB\u9020\u304C\u5909\u308F\u3063\u305F\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002";
+  if (!valueMatchesSampleType(value, locator.sampleValueType)) {
+    return "\u30B5\u30F3\u30D7\u30EB\u3068\u5024\u306E\u7A2E\u985E\u304C\u5909\u308F\u3063\u305F\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002";
+  }
+  return "";
+}
+function balancedEndBoundary(body, from, token) {
+  const pair = Object.entries(DELIMITER_PAIRS).find(([, value]) => value.token === token);
+  if (!pair) return { value: "", status: "invalid", reason: "\u5024\u306E\u7D42\u308F\u308A\u3092\u5B89\u5168\u306B\u78BA\u8A8D\u3067\u304D\u307E\u305B\u3093\u3002" };
+  const [open, { close }] = pair;
+  const lineEnd = body.indexOf("\n", from) < 0 ? body.length : body.indexOf("\n", from);
+  const segment = body.slice(from, lineEnd);
+  let depth = 0;
+  let end = -1;
+  for (let index = 0; index < segment.length; index += 1) {
+    const character = segment[index];
+    if (character === open) {
+      depth += 1;
+    } else if (character === close) {
+      if (depth === 0) return { value: "", status: "invalid", reason: "\u5024\u306E\u62EC\u5F27\u304C\u5BFE\u5FDC\u3057\u3066\u3044\u306A\u3044\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" };
+      depth -= 1;
+      if (depth === 0) end = from + index + 1;
+    }
+  }
+  if (depth !== 0) return { value: "", status: "invalid", reason: "\u5024\u306E\u62EC\u5F27\u304C\u5BFE\u5FDC\u3057\u3066\u3044\u306A\u3044\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" };
+  if (end < 0) return { value: "", status: "missing", reason: "\u5024\u306E\u7D42\u308F\u308A\u306B\u3042\u3063\u305F\u62EC\u5F27\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002" };
+  if (body.slice(end, lineEnd).trim()) return { value: "", status: "invalid", reason: "\u5024\u306E\u7D42\u308F\u308A\u3088\u308A\u5F8C\u308D\u306B\u6587\u5B57\u304C\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" };
+  if (end - from > 500) return { value: "", status: "invalid", reason: candidateLengthIssue(body.slice(from, end)) };
+  return { value: "", status: "ok", reason: "", end };
+}
+function topLevelSuffixIndexes(body, from, to, suffix) {
+  const stack = [];
+  const indexes = [];
+  for (let index = from; index < to; index += 1) {
+    if (!stack.length && body.startsWith(suffix, index)) {
+      indexes.push(index);
+      index += Math.max(0, suffix.length - 1);
+      continue;
+    }
+    const opener = DELIMITER_PAIRS[body[index]];
+    if (opener) {
+      stack.push(opener.close);
+      continue;
+    }
+    if (!DELIMITER_CLOSERS.has(body[index])) continue;
+    if (stack.pop() !== body[index]) return null;
+  }
+  return stack.length ? null : indexes;
+}
+function locatorResult(values, missingReason) {
+  if (!values.length) return { value: "", status: "missing", reason: missingReason };
+  if (values.length > 1) return { value: "", status: "ambiguous", reason: "\u540C\u3058\u53D6\u5F97\u4F4D\u7F6E\u304C\u8907\u6570\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" };
+  const value = values[0].trim();
+  if (!value) return { value: "", status: "invalid", reason: "\u898B\u51FA\u3057\u306E\u5F8C\u308D\u306B\u5024\u304C\u3042\u308A\u307E\u305B\u3093\u3002" };
+  const issue = candidateLengthIssue(value);
+  return issue ? { value: "", status: "invalid", reason: issue } : { value, status: "ok", reason: "" };
+}
+function labelLocatorLocations(body, locator, aliases = []) {
+  const anchorRule = { id: 0, name: locator.label || "", method: "after", start: locator.label || "", end: "", pattern: "", anchorConfirmed: true, aliases };
+  const labels = [locator.label || "", ...aliases].filter(Boolean);
+  const anchorCandidates = locator.bracketed ? bracketLabelsMatchAnywhere(body, labels) : locator.inline ? plainStructuralLabelsMatch(body, labels, 0, body.length, "inline") : findRuleAnchors(body, anchorRule);
+  const anchorMap = /* @__PURE__ */ new Map();
+  for (const anchor of anchorCandidates) {
+    const current = anchorMap.get(anchor.index);
+    if (!current || anchor.end > current.end) anchorMap.set(anchor.index, anchor);
+  }
+  return [...anchorMap.values()].sort((left, right) => left.index - right.index).map((anchor) => {
+    const contentStart = locator.innerLabel ? positionAfterInnerLabel(body, anchor.end, locator.innerLabel) : skipHorizontalSpace(body, anchor.end);
+    return { anchor, valueStart: locator.includeLabel && locator.bracketed ? anchor.index : contentStart, contentStart, quoteDepth: standardQuoteDepth(body, anchor.index) };
+  }).filter((location) => location.contentStart >= 0);
+}
+function extractWithSafeLocator(body, rule) {
+  const locator = rule.locator;
+  if (!locator || !safeLocatorIsValid(locator)) {
+    return { value: "", status: "invalid", reason: "\u65E7\u5F62\u5F0F\u306E\u81EA\u52D5\u53D6\u5F97\u6761\u4EF6\u3067\u3059\u3002\u672C\u6587\u304B\u3089\u5024\u3092\u9078\u3073\u76F4\u3057\u3066\u304F\u3060\u3055\u3044\u3002" };
+  }
+  if (locator.kind === "label") {
+    const locations = labelLocatorLocations(body, locator, safeAliases(rule));
+    if (!locations.length) return { value: "", status: "missing", reason: locator.innerLabel ? `\u898B\u51FA\u3057\u300C${locator.innerLabel}\u300D\u304C\u7D9A\u304F\u53D6\u5F97\u4F4D\u7F6E\u3092\u78BA\u8A8D\u3067\u304D\u307E\u305B\u3093\u3002` : `\u898B\u51FA\u3057\u300C${locator.label}\u300D\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002` };
+    if (locations.length > 1) return { value: "", status: "ambiguous", reason: `\u898B\u51FA\u3057\u300C${locator.label}\u300D\u304C\u8907\u6570\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002` };
+    const { anchor, valueStart, contentStart, quoteDepth } = locations[0];
+    if (JSON.stringify(structuralContextLabels(body, anchor.end)) !== JSON.stringify(locator.sampleContextLabels)) return { value: "", status: "invalid", reason: "サンプルと周囲の項目構造が変わったため、自動転記しません。" };
+    const lineEnd = body.indexOf("\n", contentStart) < 0 ? body.length : body.indexOf("\n", contentStart);
+    let end = lineEnd;
+    if (locator.nextLabel) {
+      const searchEnd = Math.min(body.length, contentStart + 501);
+      const nextMatches = locator.nextLabelBracketed ? bracketLabelMatchesAnywhere(body.slice(contentStart, searchEnd), locator.nextLabel).map((match) => ({ index: contentStart + match.index, end: contentStart + match.end })) : plainLabelMatchesAfter(body, locator.nextLabel, contentStart, searchEnd);
+      if (!nextMatches.length) return { value: "", status: "missing", reason: `\u6B21\u306E\u898B\u51FA\u3057\u300C${locator.nextLabel}\u300D\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002` };
+      if (nextMatches.length > 1) return { value: "", status: "ambiguous", reason: `\u6B21\u306E\u898B\u51FA\u3057\u300C${locator.nextLabel}\u300D\u304C\u8907\u6570\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002` };
+      end = nextMatches[0].index;
+      const boundaryLineStart = body.lastIndexOf("\n", Math.max(contentStart, end - 1)) + 1;
+      const boundaryPrefix = body.slice(boundaryLineStart, end);
+      if (boundaryLineStart > contentStart && /^[ \t\u3000]*(?:>[ \t\u3000]*)*(?:[*#・■□◇◆]+[ \t\u3000]*)?$/.test(boundaryPrefix)) {
+        end = boundaryLineStart;
+      } else {
+        while (end > contentStart && /[ \t\u3000]/.test(body[end - 1])) end -= 1;
+        if (end > contentStart && /[｜|／/;；,，、]/.test(body[end - 1])) end -= 1;
+      }
+    } else if (locator.suffix) {
+      const searchEnd = Math.min(lineEnd, contentStart + 601);
+      const suffixIndexes = topLevelSuffixIndexes(body, contentStart, searchEnd, locator.suffix);
+      if (suffixIndexes === null) return { value: "", status: "invalid", reason: "\u5024\u306E\u62EC\u5F27\u304C\u5BFE\u5FDC\u3057\u3066\u3044\u306A\u3044\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" };
+      if (!suffixIndexes.length) return { value: "", status: "missing", reason: "\u5024\u306E\u76F4\u5F8C\u306B\u3042\u3063\u305F\u76EE\u5370\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002" };
+      if (suffixIndexes.length > 1) return { value: "", status: "ambiguous", reason: "\u5024\u306E\u7D42\u308F\u308A\u5019\u88DC\u304C\u8907\u6570\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" };
+      end = suffixIndexes[0];
+    } else if (locator.balancedEnd) {
+      const balanced = balancedEndBoundary(body, contentStart, locator.balancedEnd);
+      if (balanced.status !== "ok" || balanced.end === void 0) return balanced;
+      end = balanced.end;
+    } else if (lineEnd < body.length) {
+      const nextLineEnd = body.indexOf("\n", lineEnd + 1);
+      const nextLine = body.slice(lineEnd + 1, nextLineEnd < 0 ? body.length : nextLineEnd);
+      if (nextLine.trim() && !structuredLeadingLine(nextLine)) {
+        return { value: "", status: "invalid", reason: "\u6B21\u306E\u884C\u304C\u5024\u306E\u7D9A\u304D\u304B\u5224\u5B9A\u3067\u304D\u306A\u3044\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002\u6B21\u306E\u898B\u51FA\u3057\u307E\u3067\u542B\u3081\u3066\u9078\u3073\u76F4\u3057\u3066\u304F\u3060\u3055\u3044\u3002" };
+      }
+    }
+    const content = stripQuotedCandidate(body.slice(contentStart, end), quoteDepth);
+    if (content.issue) return { value: "", status: "invalid", reason: content.issue };
+    if (!content.value) return { value: "", status: "invalid", reason: "見出しの後ろに値がありません。" };
+    const extracted = stripQuotedCandidate(body.slice(valueStart, end), quoteDepth);
+    if (extracted.issue) return { value: "", status: "invalid", reason: extracted.issue };
+    const value = extracted.value;
+    const candidateIssue = proseCandidateIssue(content.value);
+    if (candidateIssue) return { value: "", status: "invalid", reason: candidateIssue };
+    const signatureIssue = extractedSignatureIssue(value, locator);
+    if (signatureIssue) return { value: "", status: "invalid", reason: signatureIssue };
+    return locatorResult([value], `\u898B\u51FA\u3057\u300C${locator.label}\u300D\u306E\u5F8C\u308D\u306B\u5024\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002`);
+  }
+  if (locator.kind === "block") {
+    const lines = body.split("\n");
+    const starts = lines.map((line, index) => ({ line, index })).filter(({ line }) => semanticLabel(line) === semanticLabel(locator.heading || ""));
+    if (starts.length !== 1) return starts.length ? { value: "", status: "ambiguous", reason: "\u540C\u3058\u898B\u51FA\u3057\u304C\u8907\u6570\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" } : { value: "", status: "missing", reason: `\u898B\u51FA\u3057\u300C${locator.heading}\u300D\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002` };
+    let from = starts[0].index + 1;
+    while (from < lines.length && !lines[from].trim()) from += 1;
+    let to = lines.length;
+    if (locator.endHeading) {
+      const ends = lines.map((line, index) => ({ line, index })).filter(({ line, index }) => index >= from && semanticLabel(line) === semanticLabel(locator.endHeading || ""));
+      if (ends.length !== 1) return ends.length ? { value: "", status: "ambiguous", reason: "\u5024\u306E\u7D42\u308F\u308A\u5019\u88DC\u304C\u8907\u6570\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" } : { value: "", status: "missing", reason: "\u5024\u306E\u76F4\u5F8C\u306B\u3042\u3063\u305F\u898B\u51FA\u3057\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002" };
+      to = ends[0].index;
+    }
+    const value = lines.slice(from, to).join("\n").trim();
+    const issue = boundedCandidateIssue(value) || (structuralPlainLabelCount(value) > 0 ? "\u53D6\u5F97\u7BC4\u56F2\u306B\u5225\u306E\u9805\u76EE\u304C\u542B\u307E\u308C\u3066\u3044\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" : "") || proseCandidateIssue(value) || unbalancedDelimiterIssue(value) || extractedSignatureIssue(value, locator);
+    return issue ? { value: "", status: "invalid", reason: issue } : locatorResult([value], "\u898B\u51FA\u3057\u306E\u5F8C\u308D\u306B\u5024\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002");
+  }
+  if (locator.kind === "json") {
+    try {
+      let value = JSON.parse(body);
+      for (const part of locator.path || []) {
+        if (value === null || typeof value !== "object" || Array.isArray(value) || !Object.prototype.hasOwnProperty.call(value, part)) {
+          return { value: "", status: "missing", reason: "\u4FDD\u5B58\u3057\u305FJSON\u9805\u76EE\u306E\u4F4D\u7F6E\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002" };
+        }
+        value = value[part];
+      }
+      return typeof value === locator.jsonType ? locatorResult([String(value)], "\u4FDD\u5B58\u3057\u305FJSON\u9805\u76EE\u306E\u5024\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002") : { value: "", status: "invalid", reason: "\u4FDD\u5B58\u3057\u305FJSON\u9805\u76EE\u306E\u5F62\u5F0F\u304C\u5909\u308F\u3063\u305F\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" };
+    } catch {
+      return { value: "", status: "invalid", reason: "JSON\u5F62\u5F0F\u304C\u5909\u308F\u3063\u305F\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" };
+    }
+  }
+  if (locator.kind === "qa") {
+    const lines = body.split("\n");
+    const questions = lines.map((line, index) => ({ line: line.trim(), index })).filter(({ line }) => line === String(locator.question || "").trim());
+    if (questions.length !== 1) return questions.length ? { value: "", status: "ambiguous", reason: "\u540C\u3058\u8CEA\u554F\u304C\u8907\u6570\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" } : { value: "", status: "missing", reason: "\u8A2D\u5B9A\u3057\u305F\u8CEA\u554F\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002" };
+    const blockStart = questions[0].index + 1;
+    let blockEnd = blockStart;
+    while (blockEnd < lines.length && !/^Q\s*\d+[.．]?/i.test(lines[blockEnd].trim())) blockEnd += 1;
+    const answers = lines.slice(blockStart, blockEnd).map((line, offset) => ({ index: blockStart + offset, match: line.trim().match(/^回答\s*(?:：|:|=|＝)\s*(.*?)\s*$/) })).filter((item) => Boolean(item.match));
+    if (answers.length > 1) return { value: "", status: "ambiguous", reason: "同じ質問に回答が複数あるため、自動転記しません。" };
+    if (!answers.length) return { value: "", status: "missing", reason: "この質問の回答が見つかりません。" };
+    let firstContent = blockStart;
+    while (firstContent < blockEnd && !lines[firstContent].trim()) firstContent += 1;
+    if (answers[0].index !== firstContent) return { value: "", status: "missing", reason: "この質問の直後に回答が見つかりません。" };
+    const answerMatch = answers[0].match;
+    const answerLine = answerMatch[1] || "";
+    const runtimeBracketed = answerLine.startsWith("[") && answerLine.endsWith("]");
+    if (runtimeBracketed !== locator.qaBracketed) {
+      return { value: "", status: "invalid", reason: "\u56DE\u7B54\u6B04\u306E\u62EC\u5F27\u5F62\u5F0F\u304C\u30B5\u30F3\u30D7\u30EB\u304B\u3089\u5909\u308F\u3063\u305F\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002" };
+    }
+    const answer = runtimeBracketed ? answerLine.slice(1, -1).trim() : answerLine.trim();
+    if (!answer) return locatorResult([], "\u3053\u306E\u8CEA\u554F\u306E\u56DE\u7B54\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002");
+    const issue = unboundedCandidateIssue(answer) || proseCandidateIssue(answer) || unbalancedDelimiterIssue(answer) || extractedSignatureIssue(answer, locator);
+    return issue ? { value: "", status: "invalid", reason: issue } : locatorResult([answer], "\u3053\u306E\u8CEA\u554F\u306E\u56DE\u7B54\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002");
+  }
+  return { value: "", status: "invalid", reason: "\u5B89\u5168\u306B\u78BA\u8A8D\u3067\u304D\u306A\u3044\u53D6\u5F97\u6761\u4EF6\u3067\u3059\u3002\u672C\u6587\u304B\u3089\u5024\u3092\u9078\u3073\u76F4\u3057\u3066\u304F\u3060\u3055\u3044\u3002" };
+}
+function typedValue(scope, method) {
+  if (method === "after") return scope;
+  const searchable = scope.normalize("NFKC").trim();
+  if (method === "number") {
+    return searchable.match(/^([+-]?(?:\d[\d,]*)(?:\.\d+)?)(?:\s*(?:件|個|名|歳|台|本|枚|回|%|％))?$/)?.[1] || "";
+  }
+  if (method === "money") {
+    if (/(?:未定|不明|上限|下限|最大|最小|目安|参考|予定|予算)/u.test(searchable)) return "";
+    const exact = searchable.match(/^((?:¥|￥)\s?[+-]?\d[\d,]*(?:\.\d+)?|[+-]?\d[\d,]*(?:\.\d+)?\s*円|[+-]?\d[\d,]*(?:\.\d+)?)(?:\s*[（(][^()（）\r\n]{0,40}[）)])?$/)?.[1]?.trim();
+    if (exact) return exact;
+    const marked = Array.from(searchable.matchAll(/(?:¥|￥)\s?[+-]?\d[\d,]*(?:\.\d+)?|[+-]?\d[\d,]*(?:\.\d+)?\s*円/g), (match) => match[0].trim());
+    return marked.length === 1 ? marked[0] : "";
+  }
+  if (method === "date") {
+    const match = searchable.match(/^(\d{4}[/-]\d{1,2}[/-]\d{1,2}(?:\s+\d{1,2}:\d{2})?|\d{4}年\d{1,2}月\d{1,2}日(?:\s+\d{1,2}:\d{2})?|\d{1,2}月\d{1,2}日(?:\s+\d{1,2}:\d{2})?)(?:\s*[（(][^()（）\r\n]{0,40}[）)])?$/);
+    const candidates = match ? [match[1]] : [];
+    const valid = candidates.filter((candidate) => {
+      const parts = candidate.match(/^(?:(\d{4})(?:[/-]|年))?(\d{1,2})(?:[/-]|月)(\d{1,2})(?:日)?(?:\s+(\d{1,2}):(\d{2}))?$/);
+      if (!parts) return false;
+      const year = Number(parts[1] || 2e3);
+      const month = Number(parts[2]);
+      const day = Number(parts[3]);
+      const hour = Number(parts[4] || 0);
+      const minute = Number(parts[5] || 0);
+      const date = new Date(Date.UTC(year, month - 1, day));
+      return month >= 1 && month <= 12 && day >= 1 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day && hour <= 23 && minute <= 59;
+    });
+    return valid.length === 1 ? valid[0] : "";
+  }
+  if (method === "email") {
+    return searchable.match(/^<?([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})>?$/i)?.[1] || "";
+  }
+  if (method === "phone") {
+    const candidate = searchable.match(/^((?:0\d{1,4}[-ー－\s]\d{1,4}[-ー－\s]\d{3,4}|0\d{9,10}))(?:\s*[（(][^()（）\r\n]{0,40}[）)])?$/)?.[1] || "";
+    const digits = candidate.replace(/\D/g, "");
+    return digits.length === 10 || digits.length === 11 ? candidate : "";
+  }
+  return searchable;
+}
+function extractValueResult(body, rule, allRules = [rule]) {
+  const rawBody = String(body || "");
+  if (rawBody.length > 400_000) return { value: "", status: "invalid", reason: "\u672C\u6587\u304C\u9577\u3059\u304E\u308B\u305F\u3081\u3001\u5B89\u5168\u306B\u81EA\u52D5\u62BD\u51FA\u3067\u304D\u307E\u305B\u3093\u3002\u51E6\u7406\u5C65\u6B74\u304B\u3089\u5185\u5BB9\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002" };
+  const sourceBody = rawBody.replace(/\r\n?/g, "\n");
+  if (sourceBody.length > 200_000) return { value: "", status: "invalid", reason: "\u672C\u6587\u304C\u9577\u3059\u304E\u308B\u305F\u3081\u3001\u5B89\u5168\u306B\u81EA\u52D5\u62BD\u51FA\u3067\u304D\u307E\u305B\u3093\u3002\u51E6\u7406\u5C65\u6B74\u304B\u3089\u5185\u5BB9\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002" };
+  if (!Array.isArray(allRules) || allRules.length > 50) return { value: "", status: "invalid", reason: "\u53D6\u5F97\u9805\u76EE\u304C\u591A\u3059\u304E\u308B\u305F\u3081\u3001\u5B89\u5168\u306B\u81EA\u52D5\u62BD\u51FA\u3067\u304D\u307E\u305B\u3093\u3002" };
+  if (!extractionAliasesAreValid(rule) || allRules.some((candidate) => !extractionAliasesAreValid(candidate))) {
+    return { value: "", status: "invalid", reason: "\u5225\u306E\u898B\u51FA\u3057\u306F100\u6587\u5B57\u4EE5\u5185\u30FB10\u4EF6\u307E\u3067\u3067\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002" };
+  }
+  const labelBudget = allRules.reduce((total, candidate) => total + [candidate.start, candidate.locator?.label || "", ...safeAliases(candidate)].reduce((sum, marker) => sum + semanticLabel(String(marker || "")).length, 0), 0);
+  if (labelBudget > 4096) return { value: "", status: "invalid", reason: "\u898B\u51FA\u3057\u3068\u5225\u306E\u898B\u51FA\u3057\u306E\u5408\u8A08\u304C\u9577\u3059\u304E\u308B\u305F\u3081\u3001\u5B89\u5168\u306B\u81EA\u52D5\u62BD\u51FA\u3067\u304D\u307E\u305B\u3093\u3002" };
+  if (rule.method === "between") return { value: "", status: "invalid", reason: "旧形式の範囲指定です。本文から取得したい値を選び直してください。" };
+  if (rule.method !== "regex" && !extractionAnchorIsAccepted(rule)) {
+    return { value: "", status: "invalid", reason: `\u62BD\u51FA\u9805\u76EE\u300C${rule.name}\u300D\u3068\u898B\u51FA\u3057\u300C${cleanAnchorLabel(rule.start)}\u300D\u304C\u4E00\u81F4\u3057\u3066\u3044\u307E\u305B\u3093\u3002` };
+  }
+  if (rule.method === "regex") {
+    return extractWithSafeLocator(sourceBody, rule);
+  }
+  const markers = [rule.start, ...safeAliases(rule)].filter((value2) => String(value2 || "").trim());
+  if (!markers.length) return { value: "", status: "invalid", reason: "\u9805\u76EE\u3092\u898B\u5206\u3051\u308B\u898B\u51FA\u3057\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002" };
+  const anchors = findRuleAnchors(sourceBody, rule);
+  const label = cleanAnchorLabel(rule.start) || rule.name;
+  if (!anchors.length) return { value: "", status: "missing", reason: `\u898B\u51FA\u3057\u300C${label}\u300D\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002` };
+  if (anchors.length > 1) return { value: "", status: "ambiguous", reason: `\u898B\u51FA\u3057\u300C${label}\u300D\u304C\u8907\u6570\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002` };
+  const scope = fieldValueAfter(sourceBody, anchors[0].end, rule, allRules);
+  if (!scope) return { value: "", status: "invalid", reason: `\u898B\u51FA\u3057\u300C${label}\u300D\u306E\u5F8C\u308D\u306B\u5024\u304C\u3042\u308A\u307E\u305B\u3093\u3002` };
+  const issue = unboundedCandidateIssue(scope) || proseCandidateIssue(scope);
+  if (issue) return { value: "", status: "invalid", reason: issue };
+  const value = typedValue(scope, rule.method).trim();
+  if (!value) return { value: "", status: "invalid", reason: `${methodLabels[rule.method]}\u3068\u3057\u3066\u78BA\u8A8D\u3067\u304D\u307E\u305B\u3093\u3002` };
+  return { value, status: "ok", reason: "" };
+}
+function extractValue(body, rule, allRules = [rule]) {
+  return extractValueResult(body, rule, allRules).value;
+}
+const methodLabels = {
+  after: "\u6587\u5B57\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
+  number: "\u6570\u5B57\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
+  money: "\u91D1\u984D\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
+  date: "\u65E5\u4ED8\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
+  email: "\u30E1\u30FC\u30EB\u30A2\u30C9\u30EC\u30B9\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
+  phone: "\u96FB\u8A71\u756A\u53F7\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
+  between: "2\u3064\u306E\u6587\u5B57\u306E\u9593\uFF08\u8A73\u7D30\u8A2D\u5B9A\uFF09",
+  regex: "\u30B5\u30F3\u30D7\u30EB\u304B\u3089\u81EA\u52D5\u8A2D\u5B9A"
+};
 
 async function loadOwnedRule(db, userId, id) {
   const row = await db
@@ -1221,6 +1985,18 @@ async function handleRuleRun(request, env, ruleId) {
 
 async function processSavedRule(env, userId, rule, options = {}) {
   const db = requireDb(env);
+  const unsafeField = rule.fields.find((field) => field.method !== "regex" || !safeLocatorIsValid(field.locator));
+  if (unsafeField) {
+    await addHistory(db, {
+      userId,
+      ruleId: rule.id,
+      subject: `ルール「${rule.name}」`,
+      destination: rule.sheetName || "Google Sheets",
+      status: "review",
+      errorMessage: `${unsafeField.name}：旧形式の取得条件です。本文から正しい値を選び直してください。`,
+    });
+    return { success: 0, review: 1, skipped: 0, searched: 0 };
+  }
   if (!rule.spreadsheetId || !rule.sheetName) {
     await addHistory(db, {
       userId,
@@ -1296,10 +2072,15 @@ async function processSavedRule(env, userId, rule, options = {}) {
       continue;
     }
     try {
-      const extracted = rule.fields.map((field) => ({ field, value: extractValue(message.body, field) }));
-      const missing = extracted.filter((item) => !item.value);
+      const extracted = rule.fields.map((field) => {
+        const result = extractValueResult(message.body, field, rule.fields);
+        return { field, result, value: result.value };
+      });
+      const missing = extracted.filter((item) => item.result.status !== "ok");
       let status = "review";
-      let errorMessage = missing.length ? `${missing.map((item) => item.field.name).join("、")}を抽出できませんでした` : "";
+      let errorMessage = missing.length
+        ? missing.map((item) => `${item.field.name}：${item.result.reason}`).join("／")
+        : "";
       if (!missing.length) {
         const outputHeaders = sheet.headers.slice(2);
         const row = [sheetTimestamp(), rule.name, ...outputHeaders.map((header) => {
@@ -1323,6 +2104,14 @@ async function processSavedRule(env, userId, rule, options = {}) {
         status,
         errorMessage,
       });
+      // Only successful spreadsheet writes are final. A message that needs
+      // review must be retryable after the user repairs the extraction rule.
+      if (status !== "success") {
+        await db
+          .prepare("DELETE FROM processed_messages WHERE user_id = ? AND rule_id = ? AND gmail_message_id = ?")
+          .bind(userId, rule.id, message.id)
+          .run();
+      }
       if (status === "success") success += 1;
       else review += 1;
     } catch (error) {
@@ -1833,6 +2622,8 @@ async function serveApp(request, env) {
   headers.set("content-security-policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
+
+export { extractValue as extractWorkerValue, extractValueResult as extractWorkerValueResult };
 
 export default {
   async fetch(request, env) {

@@ -1897,6 +1897,7 @@ svg {
 .selection-rule-builder input { min-height: 42px; padding: 0 11px; border: 1px solid var(--soft-line); border-radius: 6px; background: white; font: inherit; }
 .selection-rule-builder > div { display: flex; flex-wrap: wrap; gap: 7px; }
 .selection-rule-builder button { min-height: 40px; padding: 0 14px; border: 1px solid var(--blue); border-radius: 999px; background: var(--blue); color: white; font: inherit; font-size: 10px; font-weight: 750; cursor: pointer; }
+.selection-rule-builder button.is-secondary { background: white; color: var(--blue); }
 .selection-rule-builder button.is-cancel { background: white; color: var(--blue); }
 .selection-rule-builder button:disabled { opacity: 0.4; cursor: default; }
 
@@ -2163,6 +2164,15 @@ svg {
   display: block;
   color: var(--blue);
   font-size: 14px;
+  line-height: 1.6;
+}
+
+.live-result__reason {
+  display: block;
+  margin-top: 5px;
+  color: #8a5c00;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .live-result i {
@@ -2211,6 +2221,17 @@ svg {
   color: var(--blue);
   font-size: 10px;
   line-height: 1.6;
+}
+
+.rule-safety-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 11px 13px;
+  border-left: 3px solid #16885a;
+  background: #e9f7ef;
+  color: #126441;
+  font-size: 12px;
+  line-height: 1.65;
 }
 
 .mapping-layout {
