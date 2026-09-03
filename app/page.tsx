@@ -1698,6 +1698,22 @@ function LegalPage({ kind, onBack }: { kind: LegalKind; onBack: () => void }) {
 
 const feedbackStatusLabel = (status: FeedbackItem["status"]) => status === "resolved" ? "解決済み" : status === "in_progress" ? "対応中" : "未対応";
 
+const feedbackDetailRows = (item: FeedbackItem) => {
+  const parseRow = (value: string, fallbackLabel: string) => {
+    const separator = value.indexOf("：");
+    return separator > 0
+      ? { label: value.slice(0, separator).trim(), value: value.slice(separator + 1).trim() }
+      : { label: fallbackLabel, value: value.trim() };
+  };
+  const contextRows = String(item.current_process || "")
+    .split("\n")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value, index) => parseRow(value, index === 0 ? "対象・状況" : "操作・補足"));
+  const outcome = String(item.desired_outcome || "").trim();
+  return outcome ? [...contextRows, parseRow(outcome, "希望する結果")] : contextRows;
+};
+
 type FeedbackTemplateId = "question" | "bug" | "survey";
 
 const testerFeedbackTemplates: Array<{
@@ -2104,6 +2120,9 @@ function AppShell({ onBack }: { onBack: () => void }) {
     { id: "feedback", label: "フィードバック", icon: "feedback" },
     ...(auth?.access.role === "admin" ? [{ id: "admin" as AppView, label: "管理", icon: "settings" }] : []),
   ];
+  const adminFeedback = adminData?.feedback ?? [];
+  const visibleAdminFeedback = adminFeedback.filter((item) => adminFeedbackFilter === "all" || item.status === adminFeedbackFilter);
+  const feedbackCount = (status: "all" | FeedbackItem["status"]) => status === "all" ? adminFeedback.length : adminFeedback.filter((item) => item.status === status).length;
 
   return (
     <div className="app-shell">
@@ -2269,9 +2288,17 @@ function AppShell({ onBack }: { onBack: () => void }) {
               <section className="admin-panel"><div className="admin-panel__heading"><div><small>ACCESS LOG</small><h2>最近のアクセス</h2></div></div><div className="access-log">{adminData?.accessHistory.length ? adminData.accessHistory.slice(0, 30).map((event, index) => <div key={`${event.email}-${event.created_at}-${index}`}><strong>{event.email}</strong><span>{formatAdminDate(event.created_at)}</span></div>) : <p>アクセス履歴はまだありません。</p>}</div></section>
               <section className="admin-panel"><div className="admin-panel__heading"><div><small>PUBLIC TRAFFIC</small><h2>公開LPの閲覧</h2><p>IPアドレスを保存せず、匿名IDで集計しています。</p></div><div className="traffic-summary"><span>今日 <strong>{adminData?.publicTraffic.todayViews ?? 0}</strong></span><span>7日間 <strong>{adminData?.publicTraffic.sevenDayViews ?? 0}</strong></span><span>閲覧者 <strong>{adminData?.publicTraffic.sevenDayVisitors ?? 0}</strong></span></div></div><div className="access-log">{adminData?.publicTraffic.recent.length ? adminData.publicTraffic.recent.slice(0, 40).map((event, index) => <div key={`${event.visitor_id}-${event.created_at}-${index}`}><strong>{event.path} <small>{event.device === "mobile" ? "スマホ" : "PC"}{event.referrer_host ? ` / ${event.referrer_host}` : " / 直接アクセス"}</small></strong><span>{formatAdminDate(event.created_at)}</span></div>) : <p>公開ページのアクセス履歴はまだありません。</p>}</div></section>
               <section className="admin-panel admin-feedback-panel">
-                <div className="admin-panel__heading"><div><small>TESTER FEEDBACK</small><h2>不明点・不具合・質問</h2><p>テスターと公開ページから届いた投稿を確認し、対応状況を更新できます。</p></div><div className="admin-feedback-summary"><span>未対応 <strong>{adminData?.feedback.filter((item) => item.status === "new").length ?? 0}</strong></span><span>全件 <strong>{adminData?.feedback.length ?? 0}</strong></span></div></div>
-                <div className="admin-feedback-filters" aria-label="投稿の絞り込み">{(["all", "new", "in_progress", "resolved"] as const).map((status) => <button type="button" key={status} className={adminFeedbackFilter === status ? "is-active" : ""} onClick={() => setAdminFeedbackFilter(status)}>{status === "all" ? "すべて" : feedbackStatusLabel(status)}</button>)}</div>
-                <div className="feedback-admin-list">{adminData?.feedback.length ? adminData.feedback.filter((item) => adminFeedbackFilter === "all" || item.status === adminFeedbackFilter).map((item) => <article className={item.visitor_id.startsWith("app:") ? "is-tester-post" : ""} key={item.id}><header><div><span>{item.category}</span><strong className={`feedback-status is-${item.status}`}>{feedbackStatusLabel(item.status)}</strong>{item.visitor_id.startsWith("app:") ? <em>テスター</em> : <em>公開ページ</em>}</div><time>#{item.id}・{formatAdminDate(item.created_at)}</time></header><strong>{item.pain}</strong>{item.current_process ? <p className="feedback-context">{item.current_process}</p> : null}{item.desired_outcome ? <p><b>期待・希望：</b>{item.desired_outcome}</p> : null}<footer>{item.contact_email ? <a href={`mailto:${item.contact_email}`}>{item.contact_email}</a> : <small>返信先なし</small>}<div>{(["new", "in_progress", "resolved"] as const).map((status) => <button type="button" key={status} className={item.status === status ? "is-active" : ""} onClick={() => void changeFeedbackStatus(item.id, status)}>{feedbackStatusLabel(status)}</button>)}</div></footer></article>) : <p>投稿はまだ届いていません。</p>}</div>
+                <div className="admin-panel__heading"><div><small>TESTER FEEDBACK</small><h2>届いたフィードバック</h2><p>新しい投稿から順に表示しています。内容を確認し、対応状況を更新してください。</p></div><div className="admin-feedback-summary"><span>未対応 <strong>{feedbackCount("new")}</strong></span><span>全件 <strong>{feedbackCount("all")}</strong></span></div></div>
+                <div className="admin-feedback-filters" aria-label="投稿の絞り込み">{(["all", "new", "in_progress", "resolved"] as const).map((status) => <button type="button" key={status} className={adminFeedbackFilter === status ? "is-active" : ""} onClick={() => setAdminFeedbackFilter(status)}><span>{status === "all" ? "すべて" : feedbackStatusLabel(status)}</span><strong>{feedbackCount(status)}</strong></button>)}</div>
+                <div className="feedback-admin-list">{visibleAdminFeedback.length ? visibleAdminFeedback.map((item) => {
+                  const detailRows = feedbackDetailRows(item);
+                  return <article className={`feedback-admin-card is-${item.status}${item.visitor_id.startsWith("app:") ? " is-tester-post" : ""}`} key={item.id}>
+                    <header><div className="feedback-admin-card__badges"><span>{item.category}</span><strong className={`feedback-status is-${item.status}`}>{feedbackStatusLabel(item.status)}</strong><em>{item.visitor_id.startsWith("app:") ? "テスター" : "公開ページ"}</em></div><time><strong>#{item.id}</strong><span>{formatAdminDate(item.created_at)}</span></time></header>
+                    <div className="feedback-admin-card__message"><small>投稿内容</small><strong>{item.pain}</strong></div>
+                    {detailRows.length ? <dl className="feedback-admin-card__details">{detailRows.map((row, index) => <div key={`${row.label}-${index}`}><dt>{row.label}</dt><dd>{row.value || "—"}</dd></div>)}</dl> : null}
+                    <footer><div className="feedback-admin-card__sender"><span>投稿者</span>{item.contact_email ? <a href={`mailto:${item.contact_email}`}>{item.contact_email}</a> : <small>返信先なし</small>}</div><div className="feedback-admin-card__actions"><span>対応状況を変更</span><div>{(["new", "in_progress", "resolved"] as const).map((status) => <button type="button" key={status} className={item.status === status ? "is-active" : ""} aria-pressed={item.status === status} onClick={() => void changeFeedbackStatus(item.id, status)}>{feedbackStatusLabel(status)}</button>)}</div></div></footer>
+                  </article>;
+                }) : <div className="feedback-admin-empty"><strong>{adminFeedback.length ? "この状態の投稿はありません" : "投稿はまだ届いていません"}</strong><p>{adminFeedback.length ? "別の対応状況を選ぶと、ほかの投稿を確認できます。" : "テスターから投稿が届くと、ここへ新しい順に表示されます。"}</p></div>}</div>
               </section>
             </section>
           ) : null}
