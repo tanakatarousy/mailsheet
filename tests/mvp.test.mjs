@@ -241,6 +241,13 @@ test("ships Gmail push webhook, watch registration and renewal routes", async ()
   assert.match(page, /このルールは実行されません/);
 });
 
+test("keeps Gmail fallback search within the Worker subrequest budget", async () => {
+  const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
+  assert.match(worker, /recentParams = new URLSearchParams\(\{ maxResults: "20" \}\)/);
+  assert.doesNotMatch(worker, /recentParams = new URLSearchParams\(\{ maxResults: "50" \}\)/);
+  assert.match(worker, /google_reconnect_required/);
+});
+
 test("serves client routes without redirecting them to the landing page", async () => {
   const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
   assert.match(worker, /const isClientRoute/);

@@ -89,7 +89,8 @@ async function requireAuthorizedUser(request, env) {
   const user = await requireUser(request, env);
   const access = await appAccess(env, user);
   if (!access.allowed) throw new HttpError(403, "この先行版は招待された方だけ利用できます。", "invite_required");
-  return { ...user, role: access.role };
+  const connection = await connectionRow(env, user.id, user.email);
+  return { ...user, id: connection?.user_id || user.id, role: access.role };
 }
 
 async function requireAdmin(request, env) {
@@ -269,12 +270,21 @@ async function validAccessToken(env, userId) {
   const row = await connectionRow(env, userId);
   if (!row) throw new HttpError(401, "Googleアカウントを接続してください。", "google_not_connected");
   if (Number(row.expires_at) > Date.now() + 60_000) {
-    return decryptSecret(row.access_token_enc, env.TOKEN_ENCRYPTION_KEY);
+    try {
+      return await decryptSecret(row.access_token_enc, env.TOKEN_ENCRYPTION_KEY);
+    } catch {
+      throw new HttpError(401, "Google接続情報を読み取れません。Google連携画面から再ログインしてください。", "google_reconnect_required");
+    }
   }
   if (!row.refresh_token_enc) {
     throw new HttpError(401, "Google接続の有効期限が切れました。再接続してください。", "google_reconnect_required");
   }
-  const refreshToken = await decryptSecret(row.refresh_token_enc, env.TOKEN_ENCRYPTION_KEY);
+  let refreshToken;
+  try {
+    refreshToken = await decryptSecret(row.refresh_token_enc, env.TOKEN_ENCRYPTION_KEY);
+  } catch {
+    throw new HttpError(401, "Google接続情報を読み取れません。Google連携画面から再ログインしてください。", "google_reconnect_required");
+  }
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -602,7 +612,9 @@ async function searchGmail(env, userId, sender, subject, limit) {
 
   // Gmail's search grammar can miss self-sent mail, emoji and punctuation-heavy subjects.
   // Fall back to recent messages so the user can select the sample instead of editing search syntax.
-  const recentParams = new URLSearchParams({ maxResults: "50" });
+  // Keep total Google API subrequests comfortably below the Workers request limit.
+  // The list request is followed by one full-message request per result.
+  const recentParams = new URLSearchParams({ maxResults: "20" });
   const recentResponse = await googleFetch(env, userId, `${GMAIL_API}/messages?${recentParams}`);
   const recentData = await recentResponse.json();
   const recent = await Promise.all((recentData.messages || []).map((message) => getGmailMessage(env, userId, message.id)));
