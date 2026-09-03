@@ -249,15 +249,18 @@ async function googleError(response, fallback) {
   return new HttpError(response.status === 401 ? 401 : 502, message, "google_api_error");
 }
 
-async function connectionRow(env, userId) {
+async function connectionRow(env, userId, email = "") {
+  const derivedEmail = String(email || (String(userId).startsWith("google:") ? String(userId).slice(7) : "")).trim().toLowerCase();
   return requireDb(env)
     .prepare(
       `SELECT user_id, google_email, access_token_enc, refresh_token_enc, expires_at, scopes,
               gmail_history_id, gmail_watch_expires_at, last_gmail_notification_at,
               last_watch_renewed_at, created_at, updated_at
-       FROM google_connections WHERE user_id = ?`,
+       FROM google_connections
+       WHERE user_id = ? OR (? <> '' AND lower(google_email) = ?)
+       ORDER BY updated_at DESC LIMIT 1`,
     )
-    .bind(userId)
+    .bind(userId, derivedEmail, derivedEmail)
     .first();
 }
 
@@ -471,7 +474,7 @@ async function handleAuthStatus(request, env) {
     ? await appAccess(env, user, true)
     : { allowed: true, role: "tester", status: "active" };
   const configured = oauthConfigured(env);
-  const row = configured && access.allowed ? await connectionRow(env, user.id) : null;
+  const row = configured && access.allowed ? await connectionRow(env, user.id, user.email) : null;
   return json({
     ok: true,
     configured,
@@ -508,6 +511,11 @@ async function handleDisconnect(request, env) {
   }
   await requireDb(env).prepare("DELETE FROM google_connections WHERE user_id = ?").bind(user.id).run();
   return json({ ok: true, connected: false });
+}
+
+async function handleLogout(request) {
+  assertSameOrigin(request);
+  return json({ ok: true }, 200, { "set-cookie": sessionCookie("", 0) });
 }
 
 function decodeBody(data) {
@@ -1254,7 +1262,11 @@ async function handleAdminOverview(request, env) {
               (SELECT ph.status FROM processing_history ph WHERE ph.user_id = ae.user_id ORDER BY ph.created_at DESC LIMIT 1) AS last_process_status
        FROM app_users au
        LEFT JOIN access_events ae ON ae.id = (SELECT latest.id FROM access_events latest WHERE lower(latest.email) = lower(au.email) ORDER BY latest.created_at DESC LIMIT 1)
-       LEFT JOIN google_connections gc ON gc.user_id = ae.user_id
+       LEFT JOIN google_connections gc ON gc.rowid = (
+         SELECT latest_gc.rowid FROM google_connections latest_gc
+         WHERE latest_gc.user_id = ae.user_id OR lower(latest_gc.google_email) = lower(au.email)
+         ORDER BY latest_gc.updated_at DESC LIMIT 1
+       )
        ORDER BY CASE au.role WHEN 'admin' THEN 0 ELSE 1 END, au.created_at DESC LIMIT 200`,
     ).all(),
     db.prepare("SELECT email, event_type, created_at FROM access_events ORDER BY created_at DESC LIMIT 100").all(),
@@ -1343,6 +1355,7 @@ async function routeApi(request, env) {
   if (method === "GET" && url.pathname === "/api/oauth/google/callback") return handleOAuthCallback(request, env);
   if (method === "GET" && url.pathname === "/api/auth/status") return handleAuthStatus(request, env);
   if (method === "POST" && url.pathname === "/api/auth/disconnect") return handleDisconnect(request, env);
+  if (method === "POST" && url.pathname === "/api/auth/logout") return handleLogout(request);
   if (method === "GET" && url.pathname === "/api/gmail/messages") return handleGmailMessages(request, env);
   if (method === "GET" && url.pathname === "/api/gmail/push/config") return handlePushConfig(request, env);
   if (method === "POST" && url.pathname === "/api/gmail/watch") return handleWatchStart(request, env);

@@ -1507,6 +1507,16 @@ function AppShell({ onBack }: { onBack: () => void }) {
     }
   };
 
+  const logout = async () => {
+    try {
+      await postJson<{ ok: true }>("/api/auth/logout", {});
+      window.history.replaceState({}, "", "/app");
+      window.location.reload();
+    } catch (error) {
+      setAppNotice({ kind: "warning", text: errorText(error) });
+    }
+  };
+
   const showPushSetup = async () => {
     try {
       const setup = await apiFetch<{ ok: true; topic: string; webhookUrl: string; renewalUrl: string }>("/api/gmail/push/config");
@@ -1543,8 +1553,9 @@ function AppShell({ onBack }: { onBack: () => void }) {
         </nav>
         <div className="app-sidebar__foot">
           <span>PRIVATE BETA</span>
-          <strong>{auth?.connected ? "Google接続済み" : "MAILSHEET workspace"}</strong>
+          <strong>{auth?.connected ? "Google連携済み" : "MAILSHEET workspace"}</strong>
           <small>{auth?.googleEmail || auth?.appUser.email || "読み込み中…"}</small>
+          {auth?.appUser.email ? <button type="button" onClick={logout}>ログアウト →</button> : null}
         </div>
       </aside>
 

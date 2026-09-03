@@ -3044,6 +3044,21 @@ svg {
   font-size: 9px;
 }
 
+.app-sidebar__foot button {
+  width: fit-content;
+  margin-top: 13px;
+  padding: 0 0 3px;
+  border: 0;
+  border-bottom: 1px solid rgba(255,255,255,.55);
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.app-sidebar__foot button:hover { color: var(--yellow); border-color: var(--yellow); }
+
 .app-main {
   min-width: 0;
 }
@@ -3218,7 +3233,7 @@ svg {
   color: var(--blue);
   font-family: Inter, "Helvetica Neue", Arial, sans-serif;
   font-size: 48px;
-  font-style: normal;
+  font-style: normal !important;
   font-variant-numeric: tabular-nums;
   font-weight: 750;
   letter-spacing: -.05em;
