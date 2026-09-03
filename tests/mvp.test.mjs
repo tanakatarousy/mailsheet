@@ -250,6 +250,7 @@ test("keeps Gmail fallback search within the Worker subrequest budget", async ()
   assert.match(worker, /cleanSender\.includes\("@"\)/);
   assert.match(worker, /\{from:me from:\$\{cleanSender\}\}/);
   assert.match(worker, /function senderMatches/);
+  assert.match(worker, /const exact = candidates\.filter/);
   assert.match(worker, /matchMode: closeMatches\.length \? "exact" : "recent"/);
 });
 

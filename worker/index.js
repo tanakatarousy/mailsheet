@@ -675,7 +675,14 @@ async function searchGmail(env, userId, sender, subject, limit, includeRecentFal
   if (query) params.set("q", query);
   const response = await googleFetch(env, userId, `${GMAIL_API}/messages?${params}`);
   const data = await response.json();
-  const exact = await Promise.all((data.messages || []).map((message) => getGmailMessage(env, userId, message.id)));
+  const candidates = await Promise.all((data.messages || []).map((message) => getGmailMessage(env, userId, message.id)));
+  const subjectNeedle = normalizeMailSearch(subject);
+  const exact = candidates.filter((message) => {
+    const senderMatch = !sender || senderMatches(message.from, sender);
+    const normalizedSubject = normalizeMailSearch(message.subject);
+    const subjectMatch = !subjectNeedle || normalizedSubject.includes(subjectNeedle);
+    return senderMatch && subjectMatch;
+  });
   if (exact.length || (!sender && !subject)) return { messages: exact, matchMode: "exact" };
   if (!includeRecentFallback) return { messages: [], matchMode: "recent" };
 
@@ -687,7 +694,6 @@ async function searchGmail(env, userId, sender, subject, limit, includeRecentFal
   const recentResponse = await googleFetch(env, userId, `${GMAIL_API}/messages?${recentParams}`);
   const recentData = await recentResponse.json();
   const recent = await Promise.all((recentData.messages || []).map((message) => getGmailMessage(env, userId, message.id)));
-  const subjectNeedle = normalizeMailSearch(subject);
   const closeMatches = recent.filter((message) => {
     const senderMatch = senderMatches(message.from, sender);
     const normalizedSubject = normalizeMailSearch(message.subject);
