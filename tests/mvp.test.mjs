@@ -248,6 +248,8 @@ test("keeps Gmail fallback search within the Worker subrequest budget", async ()
   assert.match(worker, /google_reconnect_required/);
   assert.match(worker, /function decodeMimeHeader/);
   assert.match(worker, /cleanSender\.includes\("@"\)/);
+  assert.match(worker, /isOwnAddress \? "from:me"/);
+  assert.match(worker, /q: "from:me"/);
 });
 
 test("expires login after seven idle days and refreshes active sessions", async () => {
@@ -256,6 +258,13 @@ test("expires login after seven idle days and refreshes active sessions", async 
   assert.match(worker, /SESSION_IDLE_SECONDS = 7 \* 24 \* 60 \* 60/);
   assert.match(worker, /refreshSession/);
   assert.match(page, /最後の操作から7日間アクセスがない場合/);
+});
+
+test("preserves the selected app tab across refreshes", async () => {
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  assert.match(page, /`\/app\/\$\{nextView\}`/);
+  assert.match(page, /window\.history\.replaceState\(\{\}, "", "\/app\/connections"\)/);
+  assert.match(page, /handleAppPopState/);
 });
 
 test("serves client routes without redirecting them to the landing page", async () => {

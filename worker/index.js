@@ -633,23 +633,46 @@ async function getGmailMessage(env, userId, messageId) {
   };
 }
 
-function gmailQuery(sender, subject) {
+function gmailQuery(sender, subject, accountEmail = "") {
   const chunks = [];
   const cleanSender = String(sender || "").normalize("NFKC").trim().replace(/["\\]/g, "");
   const cleanSubject = String(subject || "").normalize("NFKC").trim().replace(/["\\]/g, "");
-  if (cleanSender) chunks.push(cleanSender.includes("@") ? `from:${cleanSender}` : `"${cleanSender}"`);
+  const normalizeAddress = (value) => String(value || "").normalize("NFKC").toLowerCase().replace(/\s+/g, "").trim();
+  if (cleanSender) {
+    const isOwnAddress = cleanSender.includes("@") && normalizeAddress(cleanSender) === normalizeAddress(accountEmail);
+    chunks.push(isOwnAddress ? "from:me" : cleanSender.includes("@") ? `from:${cleanSender}` : `"${cleanSender}"`);
+  }
   if (cleanSubject) chunks.push(`subject:"${cleanSubject}"`);
   return chunks.join(" ");
 }
 
 async function searchGmail(env, userId, sender, subject, limit) {
   const params = new URLSearchParams({ maxResults: String(Math.min(Math.max(limit || 8, 1), 20)) });
-  const query = gmailQuery(sender, subject);
+  const connection = await connectionRow(env, userId);
+  const accountEmail = String(connection?.google_email || "").trim().toLowerCase();
+  const query = gmailQuery(sender, subject, accountEmail);
   if (query) params.set("q", query);
   const response = await googleFetch(env, userId, `${GMAIL_API}/messages?${params}`);
   const data = await response.json();
   const exact = await Promise.all((data.messages || []).map((message) => getGmailMessage(env, userId, message.id)));
   if (exact.length || (!sender && !subject)) return { messages: exact, matchMode: "exact" };
+
+  // Gmail does not always index an encoded Japanese display name in `from:` searches.
+  // For a display-name query, also inspect the connected user's own sent messages.
+  if (sender && !String(sender).includes("@")) {
+    const selfParams = new URLSearchParams({ maxResults: "20", q: "from:me" });
+    const selfResponse = await googleFetch(env, userId, `${GMAIL_API}/messages?${selfParams}`);
+    const selfData = await selfResponse.json();
+    const selfMessages = await Promise.all((selfData.messages || []).map((message) => getGmailMessage(env, userId, message.id)));
+    const normalize = (value) => String(value || "").normalize("NFKC").toLowerCase().replace(/\s+/g, "").trim();
+    const senderNeedle = normalize(sender);
+    const subjectNeedle = normalize(subject);
+    const selfMatches = selfMessages.filter((message) => (
+      normalize(message.from).includes(senderNeedle)
+      && (!subjectNeedle || normalize(message.subject).includes(subjectNeedle) || subjectNeedle.includes(normalize(message.subject)))
+    ));
+    if (selfMatches.length) return { messages: selfMatches.slice(0, Math.min(Math.max(limit || 8, 1), 20)), matchMode: "close" };
+  }
 
   // Gmail's search grammar can miss self-sent mail, emoji and punctuation-heavy subjects.
   // Fall back to recent messages so the user can select the sample instead of editing search syntax.

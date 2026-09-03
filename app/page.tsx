@@ -1403,10 +1403,13 @@ function LegalPage({ kind, onBack }: { kind: LegalKind; onBack: () => void }) {
   );
 }
 
+const APP_VIEWS: AppView[] = ["dashboard", "connections", "rules", "history", "settings", "admin"];
+
 function AppShell({ onBack }: { onBack: () => void }) {
   const oauthResult = new URLSearchParams(window.location.search).get("google");
   const oauthReason = new URLSearchParams(window.location.search).get("reason");
-  const [view, setView] = useState<AppView>(oauthResult ? "connections" : "dashboard");
+  const pathView = window.location.pathname.split("/")[2] as AppView | undefined;
+  const [view, setViewState] = useState<AppView>(oauthResult ? "connections" : pathView && APP_VIEWS.includes(pathView) ? pathView : "dashboard");
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [history, setHistory] = useState<ApiHistoryRow[]>([]);
@@ -1424,6 +1427,24 @@ function AppShell({ onBack }: { onBack: () => void }) {
   const [adminData, setAdminData] = useState<AdminOverview | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
   const [adminBusy, setAdminBusy] = useState(false);
+
+  const setView = (nextView: AppView) => {
+    setViewState(nextView);
+    const nextPath = nextView === "dashboard" ? "/app" : `/app/${nextView}`;
+    window.history.pushState({}, "", nextPath);
+  };
+
+  useEffect(() => {
+    if (oauthResult) {
+      window.history.replaceState({}, "", "/app/connections");
+    }
+    const handleAppPopState = () => {
+      const next = window.location.pathname.split("/")[2] as AppView | undefined;
+      setViewState(next && APP_VIEWS.includes(next) ? next : "dashboard");
+    };
+    window.addEventListener("popstate", handleAppPopState);
+    return () => window.removeEventListener("popstate", handleAppPopState);
+  }, [oauthResult]);
 
   useEffect(() => {
     let active = true;
