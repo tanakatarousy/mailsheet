@@ -162,14 +162,13 @@ test("keeps the high-fidelity editorial design system and mobile layouts", async
 
 test("build output has Japanese metadata and direct app routing", async () => {
   const html = await readFile(path.join(root, "dist", "client", "index.html"), "utf8");
-  const redirects = await readFile(path.join(root, "dist", "client", "_redirects"), "utf8");
   const worker = await readFile(path.join(root, "dist", "server", "index.js"), "utf8");
   const hosting = JSON.parse(await readFile(path.join(root, "dist", ".openai", "hosting.json"), "utf8"));
   assert.match(html, /<html lang="ja">/);
   assert.match(html, /<title>MAILSHEET \| メールからGoogle Sheetsへ自動反映<\/title>/);
   assert.match(html, /<div id="root"><\/div>/);
   assert.match(html, /type="module"/);
-  assert.equal(redirects.trim(), "/* /index.html 200");
+  await assert.rejects(readFile(path.join(root, "dist", "client", "_redirects"), "utf8"), (error) => error?.code === "ENOENT");
   assert.doesNotMatch(html, /0\.1秒イントロ|YouTube/);
   assert.match(worker, /\/api\/oauth\/google\/callback/);
   assert.match(worker, /\/api\/gmail\/messages/);
@@ -215,6 +214,12 @@ test("ships Gmail push webhook, watch registration and renewal routes", async ()
   assert.match(worker, /\/api\/gmail\/watch/);
   assert.match(worker, /\/api\/gmail\/push\/config/);
   assert.match(worker, /GMAIL_API}\/watch/);
+  assert.match(worker, /GMAIL_API}\/history/);
+  assert.match(worker, /historyTypes: "messageAdded"/);
+  assert.match(worker, /gmailMessagesAddedSince/);
+  assert.match(worker, /messageMatchesRule/);
+  assert.match(worker, /processSavedRule\(env, connection\.user_id, rule, \{ messages: addedMessages \}\)/);
+  assert.match(worker, /今回追加されたメール/);
   assert.match(worker, /processSavedRule/);
   assert.match(worker, /Array\.isArray\(searchResult\?\.messages\)/);
   assert.match(worker, /duplicate_rule/);

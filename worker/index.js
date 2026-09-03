@@ -705,6 +705,55 @@ async function searchGmail(env, userId, sender, subject, limit, includeRecentFal
   };
 }
 
+function messageMatchesRule(message, rule) {
+  const subjectNeedle = normalizeMailSearch(rule.subjectContains);
+  return (!rule.sender || senderMatches(message.from, rule.sender))
+    && (!subjectNeedle || normalizeMailSearch(message.subject).includes(subjectNeedle));
+}
+
+function newerHistoryId(candidate, current) {
+  if (!candidate) return false;
+  if (!current) return true;
+  try {
+    return BigInt(candidate) > BigInt(current);
+  } catch {
+    return candidate !== current;
+  }
+}
+
+async function gmailMessagesAddedSince(env, userId, startHistoryId) {
+  if (!startHistoryId) return { messages: [], historyId: "" };
+  const messageIds = [];
+  const seen = new Set();
+  let historyId = String(startHistoryId);
+  let pageToken = "";
+  // 通常は1通知につき1通。大量受信時もWorkerの外部通信上限を超えない範囲で追跡する。
+  for (let page = 0; page < 3 && messageIds.length < 20; page += 1) {
+    const params = new URLSearchParams({
+      startHistoryId: String(startHistoryId),
+      historyTypes: "messageAdded",
+      maxResults: "100",
+    });
+    if (pageToken) params.set("pageToken", pageToken);
+    const response = await googleFetch(env, userId, `${GMAIL_API}/history?${params}`);
+    const data = await response.json();
+    historyId = String(data.historyId || historyId);
+    for (const history of data.history || []) {
+      for (const added of history.messagesAdded || []) {
+        const id = String(added?.message?.id || "");
+        if (id && !seen.has(id)) {
+          seen.add(id);
+          messageIds.push(id);
+        }
+      }
+    }
+    pageToken = String(data.nextPageToken || "");
+    if (!pageToken) break;
+  }
+  const messages = await Promise.all(messageIds.slice(0, 20).map((id) => getGmailMessage(env, userId, id)));
+  return { messages, historyId };
+}
+
 async function handleGmailMessages(request, env) {
   const user = await requireAuthorizedUser(request, env);
   const url = new URL(request.url);
@@ -1161,7 +1210,7 @@ async function handleRuleRun(request, env, ruleId) {
   return json({ ok: true, result });
 }
 
-async function processSavedRule(env, userId, rule) {
+async function processSavedRule(env, userId, rule, options = {}) {
   const db = requireDb(env);
   if (!rule.spreadsheetId || !rule.sheetName) {
     await addHistory(db, {
@@ -1188,22 +1237,26 @@ async function processSavedRule(env, userId, rule) {
     });
     return { success: 0, review: 1, skipped: 0, searched: 0 };
   }
-  let searchResult;
-  try {
-    // 自動処理では、画面表示用の「最近のメール」へフォールバックしない。
-    searchResult = await searchGmail(env, userId, rule.sender, rule.subjectContains, 10, false);
-  } catch (error) {
-    await addHistory(db, {
-      userId,
-      ruleId: rule.id,
-      subject: `ルール「${rule.name}」`,
-      destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
-      status: "failed",
-      errorMessage: `Gmailを検索できませんでした：${error instanceof Error ? error.message : "不明なエラー"}`,
-    });
-    return { success: 0, review: 1, skipped: 0, searched: 0 };
+  let messages = [];
+  if (Array.isArray(options.messages)) {
+    messages = options.messages.filter((message) => messageMatchesRule(message, rule));
+  } else {
+    try {
+      // 手動実行では、条件に一致する最近の未処理メールを対象にする。
+      const searchResult = await searchGmail(env, userId, rule.sender, rule.subjectContains, 10, false);
+      messages = Array.isArray(searchResult?.messages) ? searchResult.messages : [];
+    } catch (error) {
+      await addHistory(db, {
+        userId,
+        ruleId: rule.id,
+        subject: `ルール「${rule.name}」`,
+        destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+        status: "failed",
+        errorMessage: `Gmailを検索できませんでした：${error instanceof Error ? error.message : "不明なエラー"}`,
+      });
+      return { success: 0, review: 1, skipped: 0, searched: 0 };
+    }
   }
-  const messages = Array.isArray(searchResult?.messages) ? searchResult.messages : [];
   if (!messages.length) {
     const condition = rule.sender ? `差出人「${rule.sender}」` : rule.subjectContains ? `件名「${rule.subjectContains}」` : "指定条件";
     await addHistory(db, {
@@ -1212,7 +1265,9 @@ async function processSavedRule(env, userId, rule) {
       subject: `ルール「${rule.name}」を確認`,
       destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
       status: "skipped",
-      errorMessage: `${condition}に完全一致する未処理メールが見つからなかったため、転記しませんでした。`,
+      errorMessage: Array.isArray(options.messages)
+        ? `今回受信したメールは${condition}に一致しなかったため、転記しませんでした。`
+        : `${condition}に完全一致する未処理メールが見つからなかったため、転記しませんでした。`,
     });
     return { success: 0, review: 0, skipped: 1, searched: 0 };
   }
@@ -1324,7 +1379,7 @@ async function handleGmailWebhook(request, env) {
   const email = String(notification?.emailAddress || "").trim().toLowerCase();
   if (!email) throw new HttpError(400, "通知先メールがありません。", "missing_email");
   const connection = await requireDb(env)
-    .prepare("SELECT user_id, gmail_watch_expires_at FROM google_connections WHERE lower(google_email) = ?")
+    .prepare("SELECT user_id, gmail_history_id, gmail_watch_expires_at FROM google_connections WHERE lower(google_email) = ?")
     .bind(email)
     .first();
   if (!connection) return new Response(null, { status: 204 });
@@ -1333,6 +1388,14 @@ async function handleGmailWebhook(request, env) {
     .bind(notificationAt, notificationAt, connection.user_id).run();
   await requireDb(env).prepare("INSERT INTO system_events (user_id, event_type, detail, created_at) VALUES (?, 'gmail_push', ?, ?)")
     .bind(connection.user_id, email, notificationAt).run();
+  const notifiedHistoryId = String(notification?.historyId || "");
+  let addedMessages = [];
+  let nextHistoryId = String(connection.gmail_history_id || "");
+  if (newerHistoryId(notifiedHistoryId, nextHistoryId)) {
+    const changes = await gmailMessagesAddedSince(env, connection.user_id, nextHistoryId);
+    addedMessages = changes.messages;
+    nextHistoryId = changes.historyId || notifiedHistoryId;
+  }
   const rules = await activeRulesForUser(env, connection.user_id);
   await addHistory(requireDb(env), {
     userId: connection.user_id,
@@ -1341,9 +1404,19 @@ async function handleGmailWebhook(request, env) {
     subject: "Gmail受信通知",
     destination: "Gmail",
     status: "received",
-    errorMessage: rules.length ? `自動追加ONの転記ルール ${rules.length}件を確認します。` : "自動追加ONの転記ルールがないため、転記処理は行いませんでした。",
+    errorMessage: rules.length
+      ? `今回追加されたメール ${addedMessages.length}件を、自動追加ONの転記ルール ${rules.length}件で確認します。`
+      : "自動追加ONの転記ルールがないため、転記処理は行いませんでした。",
   });
-  for (const rule of rules) await processSavedRule(env, connection.user_id, rule);
+  if (addedMessages.length) {
+    for (const rule of rules) await processSavedRule(env, connection.user_id, rule, { messages: addedMessages });
+  }
+  if (nextHistoryId && newerHistoryId(nextHistoryId, String(connection.gmail_history_id || ""))) {
+    await requireDb(env)
+      .prepare("UPDATE google_connections SET gmail_history_id = ?, updated_at = ? WHERE user_id = ?")
+      .bind(nextHistoryId, new Date().toISOString(), connection.user_id)
+      .run();
+  }
   if (Number(connection.gmail_watch_expires_at || 0) < Date.now() + 24 * 60 * 60 * 1000) {
     await registerGmailWatch(env, connection.user_id);
   }
