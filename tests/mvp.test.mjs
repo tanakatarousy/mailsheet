@@ -287,6 +287,8 @@ test("provides a beginner guide without exposing tester personal data", async ()
   assert.match(page, /ONにする前の過去メールは自動転記しません/);
   assert.match(page, /tester@example\.com/);
   assert.doesNotMatch(page, /jtpgjmdaj587456325@gmail\.com/);
+  assert.match(page, /needsSignIn && view !== "guide"/);
+  assert.match(page, /view === "guide" \|\| \(!needsSignIn/);
   assert.match(styles, /\.guide-step/);
   assert.match(styles, /\.guide-connection-check/);
 });

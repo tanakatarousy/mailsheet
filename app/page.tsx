@@ -2013,7 +2013,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
         </nav>
 
         <main className="app-content">
-          {needsSignIn ? (
+          {needsSignIn && view !== "guide" ? (
             <section className="sign-in-gate" aria-labelledby="sign-in-title">
               <span>EARLY ACCESS</span>
               <h1 id="sign-in-title">無料で試す</h1>
@@ -2027,14 +2027,14 @@ function AppShell({ onBack }: { onBack: () => void }) {
               </details>
             </section>
           ) : null}
-          {!needsSignIn && auth?.access.allowed === false ? (
+          {!needsSignIn && auth?.access.allowed === false && view !== "guide" ? (
             <section className="sign-in-gate invite-gate" aria-labelledby="invite-title">
               <span>INVITATION ONLY</span><h1 id="invite-title">現在は招待制です</h1>
               <p><strong>{auth.appUser.email}</strong> は、まだテスターとして登録されていません。管理者へこのメールアドレスを伝えてください。</p>
               <button className="button button--outline" type="button" onClick={onBack}>トップへ戻る</button>
             </section>
           ) : null}
-          {!needsSignIn && auth?.access.allowed !== false ? <>
+          {view === "guide" || (!needsSignIn && auth?.access.allowed !== false) ? <>
           {appNotice ? <div className={`app-notice is-${appNotice.kind}`} role="status"><span>{appNotice.text}</span><button type="button" onClick={() => setAppNotice(null)} aria-label="通知を閉じる">×</button></div> : null}
           {view === "dashboard" ? (
             <section className="app-view dashboard-view">
