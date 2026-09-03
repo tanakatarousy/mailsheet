@@ -246,6 +246,8 @@ test("keeps Gmail fallback search within the Worker subrequest budget", async ()
   assert.match(worker, /recentParams = new URLSearchParams\(\{ maxResults: "20" \}\)/);
   assert.doesNotMatch(worker, /recentParams = new URLSearchParams\(\{ maxResults: "50" \}\)/);
   assert.match(worker, /google_reconnect_required/);
+  assert.match(worker, /function decodeMimeHeader/);
+  assert.match(worker, /cleanSender\.includes\("@"\)/);
 });
 
 test("expires login after seven idle days and refreshes active sessions", async () => {

@@ -590,8 +590,32 @@ function bodyFromPayload(payload) {
   return decodeBody(payload.body?.data);
 }
 
+function decodeMimeHeader(value) {
+  return String(value || "").replace(/=\?([^?]+)\?([bq])\?([^?]*)\?=/gi, (match, charset, encoding, encoded) => {
+    try {
+      let binary = "";
+      if (String(encoding).toLowerCase() === "b") {
+        binary = atob(encoded);
+      } else {
+        const quoted = String(encoded).replace(/_/g, " ");
+        for (let index = 0; index < quoted.length; index += 1) {
+          if (quoted[index] === "=" && /^[0-9a-f]{2}$/i.test(quoted.slice(index + 1, index + 3))) {
+            binary += String.fromCharCode(Number.parseInt(quoted.slice(index + 1, index + 3), 16));
+            index += 2;
+          } else binary += quoted[index];
+        }
+      }
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      return new TextDecoder(String(charset || "utf-8")).decode(bytes);
+    } catch {
+      return match;
+    }
+  });
+}
+
 function headerValue(payload, name) {
-  return payload?.headers?.find((header) => header.name?.toLowerCase() === name.toLowerCase())?.value || "";
+  const raw = payload?.headers?.find((header) => header.name?.toLowerCase() === name.toLowerCase())?.value || "";
+  return decodeMimeHeader(raw);
 }
 
 async function getGmailMessage(env, userId, messageId) {
@@ -613,8 +637,8 @@ function gmailQuery(sender, subject) {
   const chunks = [];
   const cleanSender = String(sender || "").normalize("NFKC").trim().replace(/["\\]/g, "");
   const cleanSubject = String(subject || "").normalize("NFKC").trim().replace(/["\\]/g, "");
-  if (cleanSender) chunks.push(`from:("${cleanSender}")`);
-  if (cleanSubject) chunks.push(`subject:("${cleanSubject}")`);
+  if (cleanSender) chunks.push(cleanSender.includes("@") ? `from:${cleanSender}` : `"${cleanSender}"`);
+  if (cleanSubject) chunks.push(`subject:"${cleanSubject}"`);
   return chunks.join(" ");
 }
 

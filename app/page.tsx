@@ -647,7 +647,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       if (response.messages[0]) {
         if (response.matchMode !== "recent") selectMessage(response.messages[0]);
         if (response.matchMode === "close") setNotice({ kind: "warning", text: "表記が近いメールを見つけました。内容を確認して選択してください。" });
-        if (response.matchMode === "recent") setNotice({ kind: "warning", text: "完全一致するメールがなかったため、最近のメールを表示しています。該当メールを選択してください。" });
+        if (response.matchMode === "recent") setNotice({ kind: "warning", text: "指定した差出人を最近のメールから確認できませんでした。検索結果として最近のメールを表示しています。" });
       }
       else setNotice({ kind: "warning", text: "条件に一致するメールが見つかりませんでした。条件をゆるめて再検索してください。" });
     } catch (error) {
