@@ -259,7 +259,7 @@ function EmailDocument({
           const separatorIndex = line.indexOf("：");
           const marker = separatorIndex >= 0 ? line.slice(0, separatorIndex + 1) : "";
           const value = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : line;
-          const ruleIndex = rules.findIndex((rule) => rule.start === marker);
+          const ruleIndex = marker ? rules.findIndex((rule) => rule.start === marker) : -1;
           return (
             <p key={`${line}-${index}`} className={ruleIndex >= 0 ? `is-target target-${ruleIndex % 4}` : undefined}>
               {marker ? <span>{marker}</span> : null}
@@ -379,6 +379,8 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const mailPreviewRef = useRef<HTMLDivElement | null>(null);
   const selectionBuilderRef = useRef<HTMLDivElement | null>(null);
   const extractionRulesRef = useRef<HTMLElement | null>(null);
+  const mailConditionRef = useRef<HTMLElement | null>(null);
+  const mappingSectionRef = useRef<HTMLElement | null>(null);
   const testSectionRef = useRef<HTMLElement | null>(null);
   const rulesRef = useRef(rules);
   useEffect(() => { rulesRef.current = rules; }, [rules]);
@@ -726,6 +728,33 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     return () => window.clearTimeout(timer);
   }, [live, auth?.connected, spreadsheetInput, sheetName, inspectSpreadsheet]);
 
+  const writeSheetHeaders = async () => {
+    const response = await postJson<{ ok: true } & SheetInfo>("/api/sheets/headers", {
+      spreadsheetId: sheetInfo?.spreadsheetId || spreadsheetInput,
+      sheetName,
+      fieldNames: rules.map((rule) => rule.name),
+    });
+    const info: SheetInfo = response;
+    const nextMappings = Object.fromEntries(rules.map((rule, index) => [rule.id, info.headers[index + 1]?.label || ""]));
+    setSheetInfo(info);
+    setMappings(nextMappings);
+    setSheetConnection({ state: "connected", message: `接続済み：${info.spreadsheetName} / ${info.sheetName}` });
+    return { info, mappings: nextMappings };
+  };
+
+  const autoConfigureSheet = async () => {
+    setBusy("sheet");
+    setNotice(null);
+    try {
+      await writeSheetHeaders();
+      setNotice({ kind: "success", text: "1行目へ見出しを設定し、すべての取得項目を出力列へ割り当てました。" });
+    } catch (error) {
+      setNotice({ kind: "warning", text: errorText(error) });
+    } finally {
+      setBusy("");
+    }
+  };
+
   const saveRule = async (activeOverride = autoAdd) => {
     if (!live) {
       setSaved(true);
@@ -735,17 +764,26 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setBusy("save");
     setNotice(null);
     try {
+      let effectiveSheetInfo = sheetInfo;
+      let effectiveMappings = mappings;
+      const needsMappingSetup = activeOverride && sheetConnection.state === "connected"
+        && (!sheetInfo?.headers.length || rules.some((rule) => !String(mappings[rule.id] || "").trim()));
+      if (needsMappingSetup) {
+        const configured = await writeSheetHeaders();
+        effectiveSheetInfo = configured.info;
+        effectiveMappings = configured.mappings;
+      }
       const response = await postJson<{ ok: true; rule: SavedRule }>("/api/rules", {
         id: ruleId,
         name: ruleName,
         sender,
         subjectContains: subject,
         fields: rules,
-        spreadsheetId: sheetInfo?.spreadsheetId || spreadsheetInput,
-        spreadsheetName: sheetInfo?.spreadsheetName || "",
+        spreadsheetId: effectiveSheetInfo?.spreadsheetId || spreadsheetInput,
+        spreadsheetName: effectiveSheetInfo?.spreadsheetName || "",
         sheetName,
-        sheetHeaders: sheetInfo?.headers || [],
-        mappings,
+        sheetHeaders: effectiveSheetInfo?.headers || [],
+        mappings: effectiveMappings,
         active: activeOverride,
       });
       setRuleId(response.rule.id);
@@ -861,6 +899,38 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       ? ["B", "C", "D", "E", "F", "G"].map((column) => ({ value: `${column}列`, label: `${column}列` }))
       : [{ value: "", label: "見出し取得後に選択" }];
 
+  const hasSearchCondition = conditionMode === "sender" ? Boolean(sender.trim()) : Boolean(subject.trim());
+  const mappingsComplete = Boolean(sheetInfo?.headers.length)
+    && rules.every((rule) => Boolean(String(mappings[rule.id] || "").trim()));
+  const nextGuide = !auth?.connected
+    ? { step: "01", title: "Googleアカウントを接続", detail: "Gmailの読取とGoogle Sheetsへの書込を許可します。", target: "connection" }
+    : !hasSearchCondition
+      ? { step: "01", title: "対象メールの条件を入力", detail: "差出人または件名の、どちらか分かりやすい方を入力します。", target: "condition" }
+      : !gmailMessages.length
+        ? { step: "01", title: "一致する実メールを検索", detail: "入力した条件でGmailを検索し、サンプルにするメールを選びます。", target: "condition" }
+        : selectedText
+          ? { step: "02", title: "選択した文字に項目名を付ける", detail: "シートで使う項目名を確認して、取得項目へ追加します。", target: "selection" }
+          : !spreadsheetInput.trim()
+            ? { step: "04", title: "転記先のSpreadsheetを指定", detail: "URLを貼ると、接続とシート名を自動確認します。", target: "mapping" }
+            : sheetConnection.state !== "connected"
+              ? { step: "04", title: "Spreadsheetの接続を確認", detail: "接続結果が表示されるまで待つか、URLとシート名を確認します。", target: "mapping" }
+              : !mappingsComplete
+                ? { step: "04", title: "1行目と出力列を自動設定", detail: "A列を転記日時、B列以降を取得項目としてまとめて設定します。", target: "mapping" }
+                : !saved
+                  ? { step: "05", title: "ルールを保存", detail: "抽出条件と出力列の設定を保存します。", target: "test" }
+                  : !autoAdd
+                    ? { step: "06", title: "自動追加をONにする", detail: "保存済みルールの「ONにする」を押すと、新着メールの自動転記が始まります。", target: "saved" }
+                    : { step: "完了", title: "設定は完了しています", detail: "条件に一致する新着メールを受信すると、自動で転記します。", target: "saved" };
+
+  const goToNextGuide = () => {
+    if (nextGuide.target === "connection") window.location.href = "/api/oauth/google/start";
+    else if (nextGuide.target === "condition") scrollToRef(mailConditionRef);
+    else if (nextGuide.target === "selection") scrollToRef(selectionBuilderRef);
+    else if (nextGuide.target === "mapping") scrollToRef(mappingSectionRef);
+    else if (nextGuide.target === "test") scrollToRef(testSectionRef);
+    else scrollToRef(savedRulesRef);
+  };
+
   return (
     <div className={embedded ? "rule-workbench rule-workbench--embedded" : "rule-workbench"}>
       <div className="workbench-topbar">
@@ -886,6 +956,14 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           <p>{auth?.connected ? `${auth.googleEmail} のGmail / Sheetsを使用` : auth?.configured === false ? "Google CloudのOAuth設定が必要です" : "Googleアカウントを接続すると実メールを選べます"}</p>
           {!auth?.connected ? <a href="/api/oauth/google/start">Googleで接続 →</a> : null}
         </div>
+      ) : null}
+
+      {live ? (
+        <aside className={autoAdd && saved ? "next-action-guide is-complete" : "next-action-guide"} aria-live="polite">
+          <span>NEXT {nextGuide.step}</span>
+          <div><strong>{nextGuide.title}</strong><p>{nextGuide.detail}</p></div>
+          <button type="button" onClick={goToNextGuide}>{autoAdd && saved ? "設定を見る" : "次へ進む"} →</button>
+        </aside>
       ) : null}
 
       {live && savedRules.length ? (
@@ -936,7 +1014,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
 
       {notice ? <div className={`workbench-notice is-${notice.kind}`} role="status">{notice.text}</div> : null}
 
-      <section className="mail-condition" aria-labelledby="condition-title">
+      <section ref={mailConditionRef} className="mail-condition" aria-labelledby="condition-title">
         <div className="section-mini-heading">
           <span>01</span>
           <div><small>TARGET MAIL</small><h3 id="condition-title">対象メールを決める</h3></div>
@@ -1025,7 +1103,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         </div>
       </section>
 
-      <section className="mapping-section" aria-labelledby="mapping-title">
+      <section ref={mappingSectionRef} className="mapping-section" aria-labelledby="mapping-title">
         <div className="section-mini-heading"><span>04</span><div><small>GOOGLE SHEETS</small><h3 id="mapping-title">出力先をつなぐ</h3></div></div>
         <div className="mapping-layout">
           <div className="sheet-selector">
@@ -1047,13 +1125,15 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
             {rules.map((rule) => (
               <div key={rule.id}>
                 <span>{rule.name}</span><Icon name="arrow" size={18} />
-                <select value={mappings[rule.id] ?? mappingOptions[0]?.value ?? ""} onChange={(event) => { setMappings((current) => ({ ...current, [rule.id]: event.target.value })); markChanged(); }} aria-label={`${rule.name}の出力列`}>
+                <select value={mappings[rule.id] ?? ""} onChange={(event) => { setMappings((current) => ({ ...current, [rule.id]: event.target.value })); markChanged(); }} aria-label={`${rule.name}の出力列`}>
+                  <option value="">出力列を選択</option>
                   {mappingOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </div>
             ))}
           </div>
         </div>
+        {live && sheetConnection.state === "connected" && !mappingsComplete ? <div className="mapping-auto-setup"><div><strong>列が足りない、または未割当の項目があります。</strong><span>既存の1行目を「転記日時＋取得項目」に整え、列を自動で割り当てます。</span></div><button type="button" onClick={autoConfigureSheet} disabled={Boolean(busy)}>{busy === "sheet" ? "設定中…" : "1行目と列を自動設定"}</button></div> : null}
         <p className="mapping-timestamp-note">A列は「転記日時」専用です。シートのA1を「転記日時」にし、取得したい項目の見出しはB1以降へ入力してください。</p>
         {live ? <div className="sheet-actions"><button type="button" className="button button--blue" onClick={testWrite} disabled={Boolean(busy) || sheetConnection.state !== "connected"}>{busy === "write" ? "書き込み中…" : "この内容をテスト書き込み"}</button><button type="button" className="button button--outline" onClick={runRule} disabled={Boolean(busy) || !ruleId || sheetConnection.state !== "connected"}>{busy === "run" ? "転記中…" : "一致メールを手動で転記"}</button></div> : null}
       </section>

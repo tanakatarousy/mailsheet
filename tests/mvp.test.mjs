@@ -286,6 +286,12 @@ test("saves current sheet mappings when enabling a rule and guides the next acti
   assert.match(page, /scrollToRef\(selectionBuilderRef\)/);
   assert.match(page, /scrollToRef\(extractionRulesRef\)/);
   assert.match(page, /左のハンドルをつかんで、項目を上下に並び替えられます/);
+  assert.match(page, /NEXT \{nextGuide\.step\}/);
+  assert.match(page, /1行目と列を自動設定/);
+  assert.match(page, /<option value="">出力列を選択<\/option>/);
+  assert.match(page, /const writeSheetHeaders = async/);
+  assert.match(worker, /\/api\/sheets\/headers/);
+  assert.match(worker, /const headings = \["転記日時", \.\.\.fieldNames\]/);
   assert.match(worker, /body\.fields\.some\(\(field\) => !String\(body\.mappings\[String\(field\.id\)\]/);
 });
 

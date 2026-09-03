@@ -764,6 +764,28 @@ async function handleSheetInspect(request, env) {
   return json({ ok: true, ...(await inspectSheet(env, user.id, body.spreadsheetId, String(body.sheetName || ""))) });
 }
 
+async function handleSheetHeaders(request, env) {
+  assertSameOrigin(request);
+  const user = await requireAuthorizedUser(request, env);
+  const body = await readJson(request);
+  const id = spreadsheetId(body.spreadsheetId);
+  const targetSheet = String(body.sheetName || "").trim();
+  const fieldNames = Array.isArray(body.fieldNames)
+    ? body.fieldNames.slice(0, 50).map((name, index) => String(name || `項目${index + 1}`).trim().slice(0, 300))
+    : [];
+  if (!targetSheet) throw new HttpError(400, "Sheetを選択してください。", "sheet_required");
+  if (!fieldNames.length) throw new HttpError(400, "取得項目を1つ以上追加してください。", "fields_required");
+  const headings = ["転記日時", ...fieldNames];
+  const endColumn = columnName(headings.length - 1);
+  const range = encodeURIComponent(sheetRange(targetSheet, `A1:${endColumn}1`));
+  await googleFetch(env, user.id, `${SHEETS_API}/${encodeURIComponent(id)}/values/${range}?valueInputOption=RAW`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ values: [headings] }),
+  });
+  return json({ ok: true, ...(await inspectSheet(env, user.id, id, targetSheet)) });
+}
+
 async function appendSheetRow(env, userId, inputId, sheetName, values) {
   const id = spreadsheetId(inputId);
   if (!sheetName) throw new HttpError(400, "Sheetを選択してください。", "sheet_required");
@@ -1442,6 +1464,7 @@ async function routeApi(request, env) {
   if (method === "POST" && url.pathname === "/api/webhooks/gmail") return handleGmailWebhook(request, env);
   if (method === "POST" && url.pathname === "/api/webhooks/gmail/renew") return handleWatchRenewAll(request, env);
   if (method === "POST" && url.pathname === "/api/sheets/inspect") return handleSheetInspect(request, env);
+  if (method === "POST" && url.pathname === "/api/sheets/headers") return handleSheetHeaders(request, env);
   if (method === "POST" && url.pathname === "/api/sheets/test") return handleSheetTest(request, env);
   if (method === "GET" && url.pathname === "/api/rules") return handleRulesList(request, env);
   if (method === "POST" && url.pathname === "/api/rules") return handleRuleSave(request, env);
