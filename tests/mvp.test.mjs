@@ -272,6 +272,23 @@ test("preserves the selected app tab across refreshes", async () => {
   assert.match(page, /`\/app\/\$\{nextView\}`/);
   assert.match(page, /window\.history\.replaceState\(\{\}, "", "\/app\/connections"\)/);
   assert.match(page, /handleAppPopState/);
+  assert.match(page, /"guide"/);
+});
+
+test("provides a beginner guide without exposing tester personal data", async () => {
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  const styles = await readFile(path.join(root, "app", "globals.css"), "utf8");
+  assert.match(page, /使い方ガイド/);
+  assert.match(page, /はじめての使い方/);
+  assert.match(page, /このアプリはGoogleで確認されていません/);
+  assert.match(page, /Gmail：メールの読取/);
+  assert.match(page, /Google Sheets：表の読取・書込/);
+  assert.match(page, /新着メールを自動転記 ON/);
+  assert.match(page, /ONにする前の過去メールは自動転記しません/);
+  assert.match(page, /tester@example\.com/);
+  assert.doesNotMatch(page, /jtpgjmdaj587456325@gmail\.com/);
+  assert.match(styles, /\.guide-step/);
+  assert.match(styles, /\.guide-connection-check/);
 });
 
 test("searches Gmail with only the condition selected by the user", async () => {
@@ -324,7 +341,7 @@ test("supports ten saved rules, three active rules, and traceable automatic proc
   assert.match(page, /const starterRules = embedded \? initialRules : \[\]/);
   assert.doesNotMatch(page, /name: "取得項目1"/);
   assert.match(page, /保存済みルール \{savedRules\.length\}\/10件/);
-  assert.match(page, /自動追加ON \{savedRules\.filter\(\(item\) => item\.active\)\.length\}\/3件/);
+  assert.match(page, /自動転記ON \{savedRules\.filter\(\(item\) => item\.active\)\.length\}\/3件/);
   assert.match(page, /この名前をSpreadsheetのB列へ出力します/);
   assert.match(worker, /rule_limit_reached/);
   assert.match(worker, /active_rule_limit_reached/);

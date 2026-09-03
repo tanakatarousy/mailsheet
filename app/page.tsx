@@ -22,7 +22,7 @@ import {
   type ExtractionRule,
 } from "@/lib/extraction";
 
-type AppView = "dashboard" | "connections" | "rules" | "history" | "settings" | "admin";
+type AppView = "dashboard" | "connections" | "rules" | "history" | "settings" | "guide" | "admin";
 
 const errorText = (error: unknown) => error instanceof ApiError ? error.message : "処理に失敗しました。もう一度お試しください。";
 const formatAdminDate = (value?: string | number) => {
@@ -184,6 +184,13 @@ function Icon({ name, size = 22 }: { name: string; size?: number }) {
       <>
         <circle cx="12" cy="12" r="9" />
         <path d="M12 7v5l3 2" />
+      </>
+    ),
+    guide: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M9.7 9a2.4 2.4 0 1 1 3.5 2.1c-.8.4-1.2 1-1.2 1.9" />
+        <path d="M12 17h.01" />
       </>
     ),
     settings: (
@@ -504,7 +511,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     if (!item.sheetName) missing.push("Sheet");
     if (!item.sheetHeaders.length) missing.push("1行目の見出し");
     if (item.fields.some((field) => !item.mappings[String(field.id)])) missing.push("出力列の割り当て");
-    if (!item.active) return { tone: "stopped", label: "停止中", message: "自動追加がOFFです。「ONにする」を押すと稼働します。" };
+    if (!item.active) return { tone: "stopped", label: "停止中", message: "新着メールの自動転記がOFFです。「自動転記ON」を押すと稼働します。" };
     if (!auth?.gmailPushConfigured) return { tone: "error", label: "受信通知未設定", message: "Gmail受信通知が未設定のため、自動転記は開始されません。" };
     if (!auth?.gmailWatchActive) return { tone: "error", label: "受信監視停止", message: "Gmailの新着監視が止まっています。「監視開始」を押してください。" };
     if (missing.length) return { tone: "error", label: "設定不足", message: `${missing.join("・")}が未設定のため、このルールは実行されません。` };
@@ -811,7 +818,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     try {
       const response = await postJson<{ ok: true; expiration: number }>("/api/gmail/watch", {});
       setAuth((current) => current ? { ...current, gmailWatchActive: true, gmailWatchExpiresAt: response.expiration } : current);
-      setNotice({ kind: "success", text: "Gmailの受信通知を開始しました。自動追加ONの保存ルールが受信時に動きます。" });
+      setNotice({ kind: "success", text: "Gmailの受信通知を開始しました。自動転記ONの保存ルールが新着メールの受信時に動きます。" });
     } catch (error) {
       setNotice({ kind: "warning", text: errorText(error) });
     } finally {
@@ -960,7 +967,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       if (active && response.gmailWatchExpiresAt) {
         setAuth((current) => current ? { ...current, gmailWatchActive: true, gmailWatchExpiresAt: response.gmailWatchExpiresAt || null } : current);
       }
-      setNotice({ kind: "success", text: `${item.name}の自動追加を${active ? "ON" : "OFF"}にしました。` });
+      setNotice({ kind: "success", text: `「${item.name}」の新着メール自動転記を${active ? "ON" : "OFF"}にしました。` });
       onDataChanged?.();
     } catch (error) {
       setNotice({ kind: "warning", text: errorText(error) });
@@ -1067,7 +1074,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                 : !saved
                   ? { step: "05", title: "ルールを保存", detail: "抽出条件と出力列の設定を保存します。", target: "test" }
                   : !autoAdd
-                    ? { step: "06", title: "自動追加をONにする", detail: "保存済みルールの「ONにする」を押すと、新着メールの自動転記が始まります。", target: "saved" }
+                    ? { step: "06", title: "新着メールの自動転記をONにする", detail: "保存済みルールの「自動転記ON」を押すと、その後に届くメールの自動転記が始まります。", target: "saved" }
                     : { step: "完了", title: "設定は完了しています", detail: "条件に一致する新着メールを受信すると、自動で転記します。", target: "saved" };
 
   const goToNextGuide = () => {
@@ -1089,9 +1096,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         </div>
         <div className="workbench-topbar__actions">
           {live ? <button type="button" className="button button--small button--outline" onClick={startNewRule} disabled={savedRules.length >= 10}><Icon name="plus" size={16} /> 新規作成</button> : null}
-          <span className={autoAdd ? "switch-control is-on" : "switch-control"} title={live ? "ONにして保存すると、新着メールを自動転記します。" : undefined}>
-            自動追加 {autoAdd ? "ON" : "OFF"}
-            <button type="button" onClick={() => { setAutoAdd((value) => !value); markChanged(); }} aria-pressed={autoAdd}><i /></button>
+          <span className={autoAdd ? "switch-control is-on" : "switch-control"} title={live ? "ONで保存すると、これから届く条件一致メールを自動で転記します。" : undefined}>
+            <span>新着メールを自動転記<small>{autoAdd ? "ON：受信後に自動で処理" : "OFF：手動操作のみ"}</small></span>
+            <button type="button" onClick={() => { setAutoAdd((value) => !value); markChanged(); }} aria-label="新着メールの自動転記を切り替える" aria-pressed={autoAdd}><i /></button>
           </span>
           <button type="button" className="button button--small button--outline" onClick={() => saveRule()} disabled={Boolean(busy)}>
             {busy === "save" ? "保存中…" : saved ? "保存済み ✓" : "下書き保存"}
@@ -1118,7 +1125,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       {live && savedRules.length ? (
         <section ref={savedRulesRef} className="saved-rules-manager" aria-label="保存済みルール管理">
           <div className="saved-rules-manager__heading">
-            <div><span>SAVED RULES</span><strong>保存済みルール {savedRules.length}/10件</strong><small>自動追加ON {savedRules.filter((item) => item.active).length}/3件</small></div>
+            <div><span>SAVED RULES</span><strong>保存済みルール {savedRules.length}/10件</strong><small>自動転記ON {savedRules.filter((item) => item.active).length}/3件</small></div>
           </div>
           <div className="saved-rules-list">
             {savedRules.map((item) => {
@@ -1128,7 +1135,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                   <div className="saved-rule-card__main">
                     <div className="saved-rule-card__title">
                       <strong>{item.name}</strong>
-                      <span className={item.active ? "rule-status is-on" : "rule-status"}>{item.active ? "自動追加 ON" : "停止中"}</span>
+                      <span className={item.active ? "rule-status is-on" : "rule-status"}>{item.active ? "自動転記 ON" : "停止中"}</span>
                       <span className={`rule-health is-${health.tone}`}>{health.label}</span>
                     </div>
                     <p>{item.sender || "送信元指定なし"} ／ {item.subjectContains ? `件名「${item.subjectContains}」` : "件名指定なし"}</p>
@@ -1138,7 +1145,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                   <div className="saved-rule-card__actions">
                     <button type="button" onClick={() => applySavedRule(item)}>開く</button>
                     {item.active && auth?.gmailPushConfigured && !auth.gmailWatchActive ? <button type="button" onClick={() => void activateGmailWatch()}>監視開始</button> : null}
-                    <button type="button" onClick={() => void setStoredRuleActive(item, !item.active)}>{item.active ? "停止" : "ONにする"}</button>
+                    <button type="button" onClick={() => void setStoredRuleActive(item, !item.active)}>{item.active ? "自動転記を停止" : "自動転記ON"}</button>
                     <button type="button" className="is-danger" onClick={() => void deleteStoredRule(item)}>削除</button>
                   </div>
                 </article>
@@ -1316,7 +1323,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
               <button type="button" className="button button--outline" onClick={() => saveRule()} disabled={Boolean(busy)}>{busy === "save" ? "保存中…" : "ルールを保存"}</button>
               {!live ? <button type="button" className="button button--blue" onClick={() => setSaved(true)}>テスト結果を保存</button> : null}
             </div>
-            {live ? <div className={auth?.gmailWatchActive && !autoAdd ? "automation-note is-warning" : "automation-note"}><p>{auth?.gmailWatchActive && autoAdd ? "受信通知と自動追加は有効です。条件に一致する新着メールを自動転記します。" : auth?.gmailWatchActive ? "受信通知は有効です。自動転記する場合は、画面上部の自動追加をONにしてルールを保存してください。" : auth?.gmailPushConfigured ? "自動転記を使う場合は、Connectionsで受信通知を開始してください。" : "Google CloudでPub/Subを設定すると、新着メールを自動転記できます。"}</p>{auth?.gmailPushConfigured && !auth.gmailWatchActive ? <button type="button" onClick={activateGmailWatch} disabled={Boolean(busy)}>受信通知を開始</button> : null}</div> : null}
+            {live ? <div className={auth?.gmailWatchActive && !autoAdd ? "automation-note is-warning" : "automation-note"}><p>{auth?.gmailWatchActive && autoAdd ? "受信通知と新着メールの自動転記は有効です。条件に一致する新着メールだけを転記します。" : auth?.gmailWatchActive ? "受信通知は有効です。自動転記する場合は、画面上部の「新着メールを自動転記」をONにしてルールを保存してください。" : auth?.gmailPushConfigured ? "自動転記を使う場合は、Google接続で受信通知を開始してください。" : "Google CloudでPub/Subを設定すると、新着メールを自動転記できます。"}</p>{auth?.gmailPushConfigured && !auth.gmailWatchActive ? <button type="button" onClick={activateGmailWatch} disabled={Boolean(busy)}>受信通知を開始</button> : null}</div> : null}
           </div>
         ) : null}
       </section>
@@ -1679,7 +1686,126 @@ function LegalPage({ kind, onBack }: { kind: LegalKind; onBack: () => void }) {
   );
 }
 
-const APP_VIEWS: AppView[] = ["dashboard", "connections", "rules", "history", "settings", "admin"];
+function GettingStartedGuide({ auth, onNavigate }: { auth: AuthStatus | null; onNavigate: (view: AppView) => void }) {
+  const gmailReady = Boolean(auth?.connected && auth.grantedScopes.some((scope) => scope.includes("gmail.readonly")));
+  const sheetsReady = Boolean(auth?.connected && auth.grantedScopes.some((scope) => scope.includes("spreadsheets")));
+
+  return (
+    <section className="app-view guide-view">
+      <div className="app-view-heading">
+        <div><span>GETTING STARTED</span><h1>はじめての使い方</h1><p>何も設定していない状態から、新着メールの自動転記を始めるまでを順番に説明します。</p></div>
+      </div>
+
+      <section className="guide-intro">
+        <div><small>FIRST, READ THIS</small><h2>MAILSHEETは、メールの決まった場所から値を取り出して、表の1行にします。</h2><p>最初に1通だけ見本のメールを選び、「氏名」「電話番号」などの取り出し方と転記先を登録します。プログラムや数式の知識は必要ありません。</p></div>
+        <div className="guide-intro__flow" aria-label="基本の流れ"><span>Gmail</span><Icon name="arrow" size={19} /><span>必要な値</span><Icon name="arrow" size={19} /><span>Google Sheets</span></div>
+      </section>
+
+      <nav className="guide-index" aria-label="使い方ガイドの目次">
+        {[
+          ["01", "Googleでログイン"], ["02", "権限を確認"], ["03", "実メールを選ぶ"],
+          ["04", "取得項目を作る"], ["05", "Sheetsへ接続"], ["06", "転記を開始"],
+        ].map(([number, label]) => <a key={number} href={`#guide-step-${number}`}><span>{number}</span>{label}</a>)}
+      </nav>
+
+      <div className="guide-steps">
+        <article id="guide-step-01" className="guide-step">
+          <header><span>01</span><div><small>GOOGLE SIGN IN</small><h2>招待されたGmailでログインする</h2></div></header>
+          <div className="guide-step__body guide-two-column">
+            <div>
+              <ol className="guide-instructions">
+                <li><strong>「Googleでログイン」を押す</strong><p>MAILSHEETにGmailのパスワードを入力することはありません。Googleの画面でログインします。</p></li>
+                <li><strong>管理者へ伝えたGmailを選ぶ</strong><p>例：<code>tester@example.com</code>。招待リストとGoogle Cloudのテストユーザーに登録された、同じアカウントを使います。</p></li>
+                <li><strong>警告が出たら内容を確認して「続行」</strong><p>テスト公開中は「このアプリはGoogleで確認されていません」と表示される場合があります。管理者から招待されたテスターだけが続行してください。</p></li>
+              </ol>
+            </div>
+            <div className="guide-screen-stack" aria-label="Googleログイン画面の見本">
+              <div className="guide-google-card"><img src="/google-g.svg" alt="" /><small>Googleでログイン</small><strong>MAILSHEETへ進む</strong><span>tester@example.com</span></div>
+              <div className="guide-warning-card"><span>Google</span><strong>このアプリはGoogleで確認されていません</strong><p>現在テスト中のアプリへのアクセスが許可されています。</p><button type="button" tabIndex={-1}>続行</button></div>
+              <p className="guide-caption">説明図の名前・メールアドレスは見本です。実際はご自身のアカウントが表示されます。</p>
+            </div>
+          </div>
+        </article>
+
+        <article id="guide-step-02" className="guide-step">
+          <header><span>02</span><div><small>GOOGLE PERMISSIONS</small><h2>Gmailの読取とSheetsへの書込を許可する</h2></div></header>
+          <div className="guide-step__body guide-two-column">
+            <div>
+              <p className="guide-lead">Googleの確認画面で、MAILSHEETが使用する2つの権限を確認します。表示された選択欄にチェックを入れ、「続行」を押してください。</p>
+              <ul className="guide-permission-list">
+                <li><span><Icon name="mail" size={22} /></span><div><strong>Gmail：メールの読取</strong><p>差出人・件名・本文を検索し、必要な値を取り出すために使います。送信や削除は行いません。</p></div></li>
+                <li><span><Icon name="sheet" size={22} /></span><div><strong>Google Sheets：表の読取・書込</strong><p>1行目の見出しを確認し、抽出した値を指定したSpreadsheetへ追加するために使います。</p></div></li>
+              </ul>
+              <button type="button" className="button button--outline button--small" onClick={() => onNavigate("connections")}>Google接続を確認 <Icon name="arrow" size={16} /></button>
+            </div>
+            <div className="guide-connection-check">
+              <small>CURRENT STATUS</small><h3>現在の連携状態</h3>
+              <div className={gmailReady ? "is-ready" : ""}><span>{gmailReady ? "✓" : "!"}</span><p><strong>Gmail 読取</strong>{gmailReady ? "許可済み" : "未確認"}</p></div>
+              <div className={sheetsReady ? "is-ready" : ""}><span>{sheetsReady ? "✓" : "!"}</span><p><strong>Google Sheets 書込</strong>{sheetsReady ? "許可済み" : "未確認"}</p></div>
+              <p>{auth?.connected ? `${auth.googleEmail || "Googleアカウント"} で接続しています。` : "Google接続を完了すると、ここが2つとも「許可済み」になります。"}</p>
+            </div>
+          </div>
+        </article>
+
+        <article id="guide-step-03" className="guide-step">
+          <header><span>03</span><div><small>TARGET MAIL</small><h2>転記したいメールを1通選ぶ</h2></div></header>
+          <div className="guide-step__body guide-two-column">
+            <ol className="guide-instructions">
+              <li><strong>左メニューの「転記ルール」を開く</strong><p>「差出人（From）で探す」または「件名で探す」を選びます。</p></li>
+              <li><strong>検索条件を入力する</strong><p>差出人は表示名でもメールアドレスでも検索できます。迷った場合は、実メールに表示されるメールアドレスを入力すると確実です。</p></li>
+              <li><strong>「一致する実メールを探す」を押す</strong><p>候補一覧から、今後も同じ形式で届く代表的なメールを1通選びます。</p></li>
+            </ol>
+            <div className="guide-ui-sample"><small>検索例</small><label>差出人のメールアドレス、または表示名</label><div><span>notice@example.com</span><strong>一致する実メールを探す</strong></div><p>検索結果が出ない場合は、差出人のメールアドレスか件名の一部で試します。</p></div>
+          </div>
+        </article>
+
+        <article id="guide-step-04" className="guide-step">
+          <header><span>04</span><div><small>EXTRACTION FIELDS</small><h2>メールから取り出す項目を作る</h2></div></header>
+          <div className="guide-step__body guide-two-column">
+            <ol className="guide-instructions">
+              <li><strong>本文中の欲しい値をドラッグして選ぶ</strong><p>例：「池田 隼人」の部分だけを選びます。選んだ文字の前後から、取り出し方が自動で作られます。</p></li>
+              <li><strong>シートで使う項目名を付ける</strong><p>「氏名」「電話番号」「住所」など、列名として分かりやすい名前にします。</p></li>
+              <li><strong>必要な項目を同じ手順で追加する</strong><p>項目は左のハンドルまたは上下ボタンで並び替えられます。抽出結果で値が取れていることを確認します。</p></li>
+            </ol>
+            <div className="guide-selection-sample"><small>本文中の値を選択</small><p>【氏名】 <mark>池田　隼人</mark><br />【電話番号】 090-0000-0000</p><div><span>選択した文字</span><strong>池田　隼人</strong><button type="button" tabIndex={-1}>この文字を取得項目にする</button></div></div>
+          </div>
+        </article>
+
+        <article id="guide-step-05" className="guide-step">
+          <header><span>05</span><div><small>GOOGLE SHEETS</small><h2>転記先を指定して、テスト書き込みする</h2></div></header>
+          <div className="guide-step__body guide-two-column">
+            <ol className="guide-instructions">
+              <li><strong>Spreadsheet URLを貼り付ける</strong><p>ブラウザで転記先のGoogle Sheetsを開き、アドレス欄のURLをコピーして貼り付けます。</p></li>
+              <li><strong>シート名を選ぶ</strong><p>「接続済み」と表示されたら、「1行目と列を自動設定」で見出しと出力列をまとめて設定できます。</p></li>
+              <li><strong>「この内容をテスト書き込み」を押す</strong><p>実際のシートにテストの1行が追加されることを確認してから、ルールを保存します。</p></li>
+            </ol>
+            <div className="guide-sheet-map"><small>出力される列</small><div><span>A列</span><strong>転記日時</strong></div><div><span>B列</span><strong>転記ルール名</strong></div><div><span>C列以降</span><strong>氏名・電話番号など</strong></div><p>ルール名は編集でき、どのルールから追加された行かをB列で確認できます。</p></div>
+          </div>
+        </article>
+
+        <article id="guide-step-06" className="guide-step">
+          <header><span>06</span><div><small>START TRANSFER</small><h2>手動転記か、新着メールの自動転記を選ぶ</h2></div></header>
+          <div className="guide-step__body">
+            <div className="guide-mode-grid">
+              <section><span>必要なときだけ</span><h3>一致メールを手動で転記</h3><p>ボタンを押した時点で、最近届いた未処理の一致メールを探して転記します。すでに届いているメールを転記したいときに使います。</p><strong>操作するまで転記しません</strong></section>
+              <section className="is-auto"><span>今後の受信を自動化</span><h3>新着メールを自動転記 ON</h3><p>ONでルールを保存した後、新しく届いた条件一致メールを受信のたびに転記します。ONにする前の過去メールは自動転記しません。</p><strong>保存できるルールは10件／ONは3件まで</strong></section>
+            </div>
+            <div className="guide-important"><Icon name="check" size={22} /><div><strong>「自動追加ON」の意味は、これです。</strong><p>名称を「新着メールを自動転記 ON」に変更しました。入力候補を自動追加する機能ではありません。新しいメールを受信したときに、保存ルールを自動実行する設定です。</p></div></div>
+            <div className="guide-finish-actions"><button type="button" className="button button--blue" onClick={() => onNavigate("rules")}>転記ルールを作る <Icon name="arrow" size={16} /></button><button type="button" className="button button--outline" onClick={() => onNavigate("history")}>処理履歴を見る</button></div>
+          </div>
+        </article>
+      </div>
+
+      <section className="guide-troubleshooting">
+        <div><small>WHEN SOMETHING GOES WRONG</small><h2>転記されないときは</h2></div>
+        <ol><li><strong>処理履歴を開く</strong><span>「成功」「転記なし」「要確認」「失敗」と理由を確認します。</span></li><li><strong>過去メールか確認</strong><span>ONより前に届いたメールは「一致メールを手動で転記」を使います。</span></li><li><strong>ルールを開く</strong><span>差出人・件名、抽出結果、Spreadsheetの接続、出力列を順番に確認します。</span></li></ol>
+        <button type="button" className="button button--outline button--small" onClick={() => onNavigate("history")}>処理履歴へ <Icon name="arrow" size={16} /></button>
+      </section>
+    </section>
+  );
+}
+
+const APP_VIEWS: AppView[] = ["dashboard", "connections", "rules", "history", "settings", "guide", "admin"];
 
 function AppShell({ onBack }: { onBack: () => void }) {
   const oauthResult = new URLSearchParams(window.location.search).get("google");
@@ -1853,6 +1979,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
     { id: "rules", label: "転記ルール", icon: "sheet" },
     { id: "history", label: "処理履歴", icon: "history" },
     { id: "settings", label: "設定", icon: "settings" },
+    { id: "guide", label: "使い方ガイド", icon: "guide" },
     ...(auth?.access.role === "admin" ? [{ id: "admin" as AppView, label: "管理", icon: "settings" }] : []),
   ];
 
@@ -1893,6 +2020,11 @@ function AppShell({ onBack }: { onBack: () => void }) {
               <p>Googleアカウントでログインすると、招待確認とGmail・Google Sheetsの接続をまとめて行います。</p>
               <a className="button button--google" href="/api/oauth/google/start"><img src="/google-g.svg" alt="" />Googleでログイン</a>
               <small>現在は、招待されたGoogleアカウントのみ利用できます。</small>
+              <details className="sign-in-help">
+                <summary>初めての方・Googleの警告が表示された方</summary>
+                <ol><li>管理者へ伝えたGmailを選びます。</li><li>「このアプリはGoogleで確認されていません」と表示されたら、招待されたアカウントであることを確認して「続行」を押します。</li><li>Gmailの読取とGoogle Sheetsへの書込を確認し、続行します。</li></ol>
+                <p>MAILSHEETへGmailのパスワードを入力することはありません。ログイン後は、左メニューの「使い方ガイド」で全手順を確認できます。</p>
+              </details>
             </section>
           ) : null}
           {!needsSignIn && auth?.access.allowed === false ? (
@@ -1992,6 +2124,8 @@ function AppShell({ onBack }: { onBack: () => void }) {
           {view === "settings" ? (
             <section className="app-view settings-view"><div className="app-view-heading"><div><span>SETTINGS</span><h1>設定</h1><p>ログイン、通知とGoogle接続を管理します。</p></div></div><div className="settings-stack"><section><div><small>SESSION</small><h2>ログインの継続</h2><p>最後の操作から7日間アクセスがない場合は、自動的にログアウトします。利用中は期限が自動更新されます。</p></div><span className="settings-value">7日間</span></section><section><div><small>NOTIFICATION</small><h2>要確認メールを画面で知らせる</h2><p>抽出できない項目を履歴の「要確認」として表示します。外部通知は未実装です。</p></div><button type="button" className={notifications ? "large-switch is-on" : "large-switch"} aria-pressed={notifications} onClick={() => setNotifications((value) => !value)}><i /></button></section><section><div><small>DATA</small><h2>保存するデータ</h2><p>抽出ルール・列マッピング・処理結果を保存します。メール本文と抽出値は保存しません。</p></div><span className="settings-value">最小保存</span></section><section className="danger-setting"><div><small>GOOGLE CONNECTION</small><h2>Google接続を解除</h2><p>Google側のトークンを失効させ、保存した接続情報を削除します。</p></div><button type="button" onClick={disconnectGoogle} disabled={!auth?.connected}>接続を解除</button></section></div></section>
           ) : null}
+
+          {view === "guide" ? <GettingStartedGuide auth={auth} onNavigate={setView} /> : null}
 
           {view === "admin" && auth?.access.role === "admin" ? (
             <section className="app-view admin-view">

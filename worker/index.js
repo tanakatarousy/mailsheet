@@ -998,7 +998,7 @@ async function handleRuleSave(request, env) {
   let gmailWatch = null;
   if (body.active) {
     if (!gmailPushConfigured(env)) {
-      throw new HttpError(503, "Gmail受信通知が未設定のため、自動追加をONにできません。管理画面でPub/Sub設定を確認してください。", "gmail_push_not_configured");
+      throw new HttpError(503, "Gmail受信通知が未設定のため、新着メールの自動転記をONにできません。管理画面でPub/Sub設定を確認してください。", "gmail_push_not_configured");
     }
     try {
       gmailWatch = await registerGmailWatch(env, user.id);
@@ -1016,7 +1016,7 @@ async function handleRuleSave(request, env) {
     }
   }
   if (body.active && (!body.spreadsheetId || !body.sheetName)) {
-    throw new HttpError(400, "自動追加をONにするには、SpreadsheetとSheetを設定してください。", "sheet_not_configured");
+    throw new HttpError(400, "新着メールの自動転記をONにするには、SpreadsheetとSheetを設定してください。", "sheet_not_configured");
   }
   const outputHeaders = new Set(body.sheetHeaders.slice(2).map((header) => String(header.label || "").trim()).filter(Boolean));
   const hasMissingMapping = body.fields.some((field) => {
@@ -1024,7 +1024,7 @@ async function handleRuleSave(request, env) {
     return !mappedHeader || !outputHeaders.has(mappedHeader);
   });
   if (body.active && (!body.sheetHeaders.length || hasMissingMapping)) {
-    throw new HttpError(400, "自動追加をONにするには、1行目の見出しを取得し、すべての取得項目に出力列を割り当ててください。", "mapping_incomplete");
+    throw new HttpError(400, "新着メールの自動転記をONにするには、1行目の見出しを取得し、すべての取得項目に出力列を割り当ててください。", "mapping_incomplete");
   }
   const now = new Date().toISOString();
   let id = body.id;
@@ -1039,7 +1039,7 @@ async function handleRuleSave(request, env) {
       ? await db.prepare("SELECT COUNT(*) AS count FROM extraction_rules WHERE user_id = ? AND active = 1 AND id <> ?").bind(user.id, id).first()
       : await db.prepare("SELECT COUNT(*) AS count FROM extraction_rules WHERE user_id = ? AND active = 1").bind(user.id).first();
     if (Number(activeCount?.count || 0) >= 3) {
-      throw new HttpError(409, "自動追加をONにできる転記ルールは3件までです。いずれかを停止してからONにしてください。", "active_rule_limit_reached");
+      throw new HttpError(409, "新着メールの自動転記をONにできるルールは3件までです。いずれかを停止してからONにしてください。", "active_rule_limit_reached");
     }
   }
   if (id) {
@@ -1405,8 +1405,8 @@ async function handleGmailWebhook(request, env) {
     destination: "Gmail",
     status: "received",
     errorMessage: rules.length
-      ? `今回追加されたメール ${addedMessages.length}件を、自動追加ONの転記ルール ${rules.length}件で確認します。`
-      : "自動追加ONの転記ルールがないため、転記処理は行いませんでした。",
+      ? `今回追加されたメール ${addedMessages.length}件を、自動転記ONのルール ${rules.length}件で確認します。`
+      : "新着メールの自動転記がONのルールがないため、転記処理は行いませんでした。",
   });
   if (addedMessages.length) {
     for (const rule of rules) await processSavedRule(env, connection.user_id, rule, { messages: addedMessages });
