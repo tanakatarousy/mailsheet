@@ -382,6 +382,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const mailConditionRef = useRef<HTMLElement | null>(null);
   const mappingSectionRef = useRef<HTMLElement | null>(null);
   const testSectionRef = useRef<HTMLElement | null>(null);
+  const watchRepairAttempted = useRef(false);
   const rulesRef = useRef(rules);
   useEffect(() => { rulesRef.current = rules; }, [rules]);
 
@@ -406,10 +407,13 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     if (!item.sheetHeaders.length) missing.push("1行目の見出し");
     if (item.fields.some((field) => !item.mappings[String(field.id)])) missing.push("出力列の割り当て");
     if (!item.active) return { tone: "stopped", label: "停止中", message: "自動追加がOFFです。「ONにする」を押すと稼働します。" };
+    if (!auth?.gmailPushConfigured) return { tone: "error", label: "受信通知未設定", message: "Gmail受信通知が未設定のため、自動転記は開始されません。" };
+    if (!auth?.gmailWatchActive) return { tone: "error", label: "受信監視停止", message: "Gmailの新着監視が止まっています。「監視開始」を押してください。" };
     if (missing.length) return { tone: "error", label: "設定不足", message: `${missing.join("・")}が未設定のため、このルールは実行されません。` };
     if (item.lastStatus === "review" || item.lastStatus === "failed") return { tone: "error", label: "要確認", message: item.lastError || "直近の処理でエラーが発生しました。Historyを確認してください。" };
     if (item.lastStatus === "success") return { tone: "success", label: "正常", message: `直近の転記に成功しました（${new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(item.lastProcessedAt))}）。` };
-    return { tone: "ready", label: "待機中", message: "設定済みです。条件に一致する新着メールを待っています。" };
+    if (!auth.lastGmailNotificationAt) return { tone: "ready", label: "通知待ち", message: "Gmail監視は開始済みです。Cloudflareへ最初の受信通知が届くのを待っています。" };
+    return { tone: "ready", label: "待機中", message: `Gmail通知を受信済みです（最終 ${new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(auth.lastGmailNotificationAt))}）。条件に一致する新着メールを待っています。` };
   };
 
   const applySavedRule = (item: SavedRule) => {
@@ -452,6 +456,21 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     });
     return () => { active = false; };
   }, [live]);
+
+  useEffect(() => {
+    if (!live || watchRepairAttempted.current || !auth?.connected || !auth.gmailPushConfigured || auth.gmailWatchActive || !savedRules.some((item) => item.active)) return;
+    watchRepairAttempted.current = true;
+    postJson<{ ok: true; expiration: number }>("/api/gmail/watch", {})
+      .then((response) => {
+        setAuth((current) => current ? { ...current, gmailWatchActive: true, gmailWatchExpiresAt: response.expiration } : current);
+        setNotice({ kind: "success", text: "停止していたGmail受信監視を再開しました。新着メールを待機しています。" });
+        onDataChanged?.();
+      })
+      .catch((error: unknown) => {
+        setNotice({ kind: "warning", text: errorText(error) });
+        onDataChanged?.();
+      });
+  }, [live, auth?.connected, auth?.gmailPushConfigured, auth?.gmailWatchActive, savedRules, onDataChanged]);
 
   const markChanged = () => {
     setTestStatus("idle");
@@ -787,7 +806,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         effectiveSheetInfo = configured.info;
         effectiveMappings = configured.mappings;
       }
-      const response = await postJson<{ ok: true; rule: SavedRule }>("/api/rules", {
+      const response = await postJson<{ ok: true; rule: SavedRule; gmailWatchExpiresAt?: number | null }>("/api/rules", {
         id: ruleId,
         name: ruleName,
         sender,
@@ -802,6 +821,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       });
       setRuleId(response.rule.id);
       setAutoAdd(response.rule.active);
+      if (response.rule.active && response.gmailWatchExpiresAt) {
+        setAuth((current) => current ? { ...current, gmailWatchActive: true, gmailWatchExpiresAt: response.gmailWatchExpiresAt || null } : current);
+      }
       setSaved(true);
       setSavedRules((current) => [response.rule, ...current.filter((item) => item.id !== response.rule.id)]);
       setNotice({ kind: "success", text: "抽出条件と列の紐付けを保存しました。" });
@@ -822,11 +844,14 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setBusy("save");
     setNotice(null);
     try {
-      const response = await postJson<{ ok: true; rule: SavedRule }>("/api/rules", { ...item, active });
+      const response = await postJson<{ ok: true; rule: SavedRule; gmailWatchExpiresAt?: number | null }>("/api/rules", { ...item, active });
       setSavedRules((current) => current.map((rule) => rule.id === item.id ? response.rule : rule));
       if (ruleId === item.id) {
         setAutoAdd(response.rule.active);
         setSaved(true);
+      }
+      if (active && response.gmailWatchExpiresAt) {
+        setAuth((current) => current ? { ...current, gmailWatchActive: true, gmailWatchExpiresAt: response.gmailWatchExpiresAt || null } : current);
       }
       setNotice({ kind: "success", text: `${item.name}の自動追加を${active ? "ON" : "OFF"}にしました。` });
       onDataChanged?.();
@@ -1005,6 +1030,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                   </div>
                   <div className="saved-rule-card__actions">
                     <button type="button" onClick={() => applySavedRule(item)}>開く</button>
+                    {item.active && auth?.gmailPushConfigured && !auth.gmailWatchActive ? <button type="button" onClick={() => void activateGmailWatch()}>監視開始</button> : null}
                     <button type="button" onClick={() => void setStoredRuleActive(item, !item.active)}>{item.active ? "停止" : "ONにする"}</button>
                     <button type="button" className="is-danger" onClick={() => void deleteStoredRule(item)}>削除</button>
                   </div>

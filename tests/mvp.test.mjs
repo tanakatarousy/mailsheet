@@ -314,6 +314,14 @@ test("supports ten saved rules, three active rules, and traceable automatic proc
   assert.match(worker, /searchGmail\(env, userId, rule\.sender, rule\.subjectContains, 10, false\)/);
   assert.match(worker, /status: "received"/);
   assert.match(worker, /status: "skipped"/);
+  assert.match(worker, /gmail_watch_failed/);
+  assert.match(worker, /Gmail受信監視を開始できませんでした/);
+  assert.match(worker, /lastGmailNotificationAt/);
+  assert.doesNotMatch(worker, /labelFilterBehavior: "INCLUDE"/);
+  assert.match(page, /watchRepairAttempted/);
+  assert.match(page, /受信監視停止/);
+  assert.match(page, /Cloudflareへ最初の受信通知が届くのを待っています/);
+  assert.match(page, />監視開始<\/button>/);
   assert.match(worker, /const row = \[sheetTimestamp\(\), rule\.name, \.\.\.sheet\.headers\.slice\(2\)/);
 });
 

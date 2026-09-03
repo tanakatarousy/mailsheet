@@ -24,6 +24,7 @@ export type AuthStatus = {
   gmailPushConfigured: boolean;
   gmailWatchActive: boolean;
   gmailWatchExpiresAt: number | null;
+  lastGmailNotificationAt: string | null;
   access: { allowed: boolean; role: "admin" | "tester" | ""; status: string };
 };
 

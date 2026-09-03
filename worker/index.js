@@ -340,8 +340,6 @@ async function registerGmailWatch(env, userId) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       topicName: env.GOOGLE_PUBSUB_TOPIC,
-      labelIds: ["INBOX"],
-      labelFilterBehavior: "INCLUDE",
     }),
   });
   const watch = await response.json();
@@ -512,6 +510,7 @@ async function handleAuthStatus(request, env) {
     gmailPushConfigured: gmailPushConfigured(env),
     gmailWatchActive: Boolean(row?.gmail_watch_expires_at && Number(row.gmail_watch_expires_at) > Date.now()),
     gmailWatchExpiresAt: row?.gmail_watch_expires_at || null,
+    lastGmailNotificationAt: row?.last_gmail_notification_at || null,
     access,
     appUser: { email: user.email },
     callbackUrl: new URL("/api/oauth/google/callback", request.url).toString(),
@@ -946,6 +945,27 @@ async function handleRuleSave(request, env) {
   assertSameOrigin(request);
   const user = await requireAuthorizedUser(request, env);
   const body = normalizeRuleBody(await readJson(request));
+  const db = requireDb(env);
+  let gmailWatch = null;
+  if (body.active) {
+    if (!gmailPushConfigured(env)) {
+      throw new HttpError(503, "Gmail受信通知が未設定のため、自動追加をONにできません。管理画面でPub/Sub設定を確認してください。", "gmail_push_not_configured");
+    }
+    try {
+      gmailWatch = await registerGmailWatch(env, user.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "不明なエラー";
+      await addHistory(db, {
+        userId: user.id,
+        ruleId: body.id,
+        subject: `受信監視：${body.name}`,
+        destination: "Gmail",
+        status: "failed",
+        errorMessage: `Gmail受信監視を開始できませんでした：${message}`,
+      });
+      throw new HttpError(502, `ルールは保存されていません。Gmail受信監視を開始できませんでした：${message}`, "gmail_watch_failed");
+    }
+  }
   if (body.active && (!body.spreadsheetId || !body.sheetName)) {
     throw new HttpError(400, "自動追加をONにするには、SpreadsheetとSheetを設定してください。", "sheet_not_configured");
   }
@@ -957,7 +977,6 @@ async function handleRuleSave(request, env) {
   if (body.active && (!body.sheetHeaders.length || hasMissingMapping)) {
     throw new HttpError(400, "自動追加をONにするには、1行目の見出しを取得し、すべての取得項目に出力列を割り当ててください。", "mapping_incomplete");
   }
-  const db = requireDb(env);
   const now = new Date().toISOString();
   let id = body.id;
   if (!id) {
@@ -1051,7 +1070,17 @@ async function handleRuleSave(request, env) {
     )
     .bind(id, user.id)
     .first();
-  return json({ ok: true, rule: parseRuleRow(saved) });
+  if (gmailWatch) {
+    await addHistory(db, {
+      userId: user.id,
+      ruleId: id,
+      subject: `受信監視：${body.name}`,
+      destination: "Gmail",
+      status: "received",
+      errorMessage: "Gmailの受信監視を開始しました。Cloudflareへの新着通知を待っています。",
+    });
+  }
+  return json({ ok: true, rule: parseRuleRow(saved), gmailWatchExpiresAt: Number(gmailWatch?.expiration || 0) || null });
 }
 
 async function handleRuleDelete(request, env, ruleId) {
@@ -1325,8 +1354,29 @@ async function handleWatchStart(request, env) {
   assertSameOrigin(request);
   const user = await requireAuthorizedUser(request, env);
   if (!gmailPushConfigured(env)) throw new HttpError(503, "先にPub/Subの接続設定が必要です。", "gmail_push_not_configured");
-  const watch = await registerGmailWatch(env, user.id);
-  return json({ ok: true, expiration: Number(watch?.expiration || 0) });
+  try {
+    const watch = await registerGmailWatch(env, user.id);
+    await addHistory(requireDb(env), {
+      userId: user.id,
+      ruleId: null,
+      subject: "Gmail受信監視を開始",
+      destination: "Gmail",
+      status: "received",
+      errorMessage: "Gmailから新着通知を受け取る準備が完了しました。",
+    });
+    return json({ ok: true, expiration: Number(watch?.expiration || 0) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "不明なエラー";
+    await addHistory(requireDb(env), {
+      userId: user.id,
+      ruleId: null,
+      subject: "Gmail受信監視の開始に失敗",
+      destination: "Gmail",
+      status: "failed",
+      errorMessage: message,
+    });
+    throw new HttpError(502, `Gmail受信監視を開始できませんでした：${message}`, "gmail_watch_failed");
+  }
 }
 
 async function handlePushConfig(request, env) {
