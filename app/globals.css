@@ -1633,6 +1633,71 @@ svg {
   gap: 15px;
 }
 
+.suggestion-field {
+  min-width: 0;
+}
+
+.input-suggestions {
+  display: flex;
+  margin-top: 7px;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.input-suggestions > small {
+  flex: 0 0 auto;
+  padding-top: 6px;
+  color: #777988;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.input-suggestions > div {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.input-suggestions button {
+  display: grid;
+  max-width: 260px;
+  min-height: 27px;
+  padding: 5px 9px;
+  overflow: hidden;
+  border: 1px solid #ccd1ea;
+  border-radius: 999px;
+  background: #f7f8ff;
+  color: var(--blue);
+  text-align: left;
+}
+
+.input-suggestions button:hover,
+.input-suggestions button:focus-visible {
+  border-color: var(--blue);
+  background: #eef1ff;
+}
+
+.input-suggestions strong,
+.input-suggestions span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.input-suggestions strong {
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.input-suggestions span {
+  margin-top: 1px;
+  color: #777988;
+  font-size: 7px;
+}
+
 .condition-mode-tabs {
   display: inline-flex;
   margin-bottom: 14px;

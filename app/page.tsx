@@ -343,6 +343,44 @@ function SiteHeader({ onOpenApp }: { onOpenApp: () => void }) {
   );
 }
 
+type RecentInputHistory = {
+  senders: string[];
+  subjects: string[];
+  spreadsheets: Array<{ value: string; label: string }>;
+};
+
+type InputSuggestion = { value: string; label?: string };
+
+const emptyRecentInputHistory = (): RecentInputHistory => ({ senders: [], subjects: [], spreadsheets: [] });
+const normalizedInput = (value: string) => value.normalize("NFKC").trim().toLocaleLowerCase("ja-JP");
+const recentValues = (value: string, current: string[]) => {
+  const clean = value.trim();
+  return clean ? [clean, ...current.filter((item) => normalizedInput(item) !== normalizedInput(clean))].slice(0, 10) : current;
+};
+const spreadsheetHistoryKey = (value: string) => value.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/)?.[1] || value.trim();
+
+function InputSuggestions({ options, value, onSelect }: { options: InputSuggestion[]; value: string; onSelect: (value: string) => void }) {
+  const query = normalizedInput(value);
+  const seen = new Set<string>();
+  const visible = options.filter((option) => {
+    const key = normalizedInput(option.value);
+    if (!key || key === query || seen.has(key)) return false;
+    seen.add(key);
+    return !query || key.includes(query) || normalizedInput(option.label || "").includes(query);
+  }).slice(0, 4);
+  if (!visible.length) return null;
+  return (
+    <div className="input-suggestions" aria-label={query ? "入力候補" : "以前の入力"}>
+      <small>{query ? "入力候補" : "以前の入力"}</small>
+      <div>{visible.map((option) => (
+        <button key={option.value} type="button" title={option.value} onMouseDown={(event) => event.preventDefault()} onClick={() => onSelect(option.value)}>
+          <strong>{option.label || option.value}</strong>{option.label ? <span>{option.value}</span> : null}
+        </button>
+      ))}</div>
+    </div>
+  );
+}
+
 function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean; onDataChanged?: () => void }) {
   const live = !embedded;
   const starterRules = embedded ? initialRules : [];
@@ -373,6 +411,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [selectedText, setSelectedText] = useState("");
   const [selectionName, setSelectionName] = useState("");
   const [sheetConnection, setSheetConnection] = useState<{ state: "idle" | "checking" | "connected" | "error"; message: string }>({ state: "idle", message: "" });
+  const [recentInputHistory, setRecentInputHistory] = useState<RecentInputHistory>(emptyRecentInputHistory);
   const draggedRuleId = useRef<number | null>(null);
   const savedRulesRef = useRef<HTMLElement | null>(null);
   const gmailResultsRef = useRef<HTMLDivElement | null>(null);
@@ -385,6 +424,65 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const watchRepairAttempted = useRef(false);
   const rulesRef = useRef(rules);
   useEffect(() => { rulesRef.current = rules; }, [rules]);
+
+  const inputHistoryStorageKey = live && auth?.appUser.email
+    ? `mailsheet:input-history:v1:${auth.appUser.email.toLocaleLowerCase("ja-JP")}`
+    : "";
+
+  useEffect(() => {
+    if (!inputHistoryStorageKey) {
+      setRecentInputHistory(emptyRecentInputHistory());
+      return;
+    }
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(inputHistoryStorageKey) || "null") as Partial<RecentInputHistory> | null;
+      setRecentInputHistory({
+        senders: Array.isArray(stored?.senders) ? stored.senders.filter((item): item is string => typeof item === "string").slice(0, 10) : [],
+        subjects: Array.isArray(stored?.subjects) ? stored.subjects.filter((item): item is string => typeof item === "string").slice(0, 10) : [],
+        spreadsheets: Array.isArray(stored?.spreadsheets)
+          ? stored.spreadsheets.filter((item): item is { value: string; label: string } => Boolean(item && typeof item.value === "string" && typeof item.label === "string")).slice(0, 10)
+          : [],
+      });
+    } catch {
+      setRecentInputHistory(emptyRecentInputHistory());
+    }
+  }, [inputHistoryStorageKey]);
+
+  const rememberInput = useCallback((kind: "sender" | "subject" | "spreadsheet", rawValue: string, label = "") => {
+    const value = rawValue.trim();
+    if (!inputHistoryStorageKey || !value) return;
+    setRecentInputHistory((current) => {
+      const next: RecentInputHistory = {
+        senders: kind === "sender" ? recentValues(value, current.senders) : current.senders,
+        subjects: kind === "subject" ? recentValues(value, current.subjects) : current.subjects,
+        spreadsheets: kind === "spreadsheet"
+          ? [{ value, label: label.trim() }, ...current.spreadsheets.filter((item) => spreadsheetHistoryKey(item.value) !== spreadsheetHistoryKey(value))].slice(0, 10)
+          : current.spreadsheets,
+      };
+      try {
+        window.localStorage.setItem(inputHistoryStorageKey, JSON.stringify(next));
+      } catch {
+        // 保存できないブラウザ設定でも、現在の画面内では候補を利用できます。
+      }
+      return next;
+    });
+  }, [inputHistoryStorageKey]);
+
+  const senderSuggestions = useMemo<InputSuggestion[]>(() => [
+    ...recentInputHistory.senders.map((value) => ({ value })),
+    ...savedRules.filter((item) => item.sender).map((item) => ({ value: item.sender, label: item.name })),
+  ], [recentInputHistory.senders, savedRules]);
+  const subjectSuggestions = useMemo<InputSuggestion[]>(() => [
+    ...recentInputHistory.subjects.map((value) => ({ value })),
+    ...savedRules.filter((item) => item.subjectContains).map((item) => ({ value: item.subjectContains, label: item.name })),
+  ], [recentInputHistory.subjects, savedRules]);
+  const spreadsheetSuggestions = useMemo<InputSuggestion[]>(() => [
+    ...recentInputHistory.spreadsheets.map((item) => ({ value: item.value, label: item.label })),
+    ...savedRules.filter((item) => item.spreadsheetId).map((item) => ({
+      value: `https://docs.google.com/spreadsheets/d/${item.spreadsheetId}`,
+      label: item.spreadsheetName ? `${item.spreadsheetName}${item.sheetName ? ` / ${item.sheetName}` : ""}` : item.name,
+    })),
+  ], [recentInputHistory.spreadsheets, savedRules]);
 
   const scrollToRef = (ref: { current: HTMLElement | null }, delay = 80) => {
     window.setTimeout(() => ref.current?.scrollIntoView({
@@ -689,6 +787,10 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       });
       const response = await apiFetch<{ ok: true; messages: GmailMessage[]; matchMode?: "exact" | "close" | "recent" }>(`/api/gmail/messages?${params}`);
       setGmailMessages(response.messages);
+      if (response.messages.length && response.matchMode !== "recent") {
+        if (conditionMode === "sender") rememberInput("sender", sender);
+        else rememberInput("subject", subject);
+      }
       if (response.messages.length) scrollToRef(gmailResultsRef);
       if (response.messages[0]) {
         if (response.matchMode !== "recent") selectMessage(response.messages[0]);
@@ -718,6 +820,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   };
 
   const inspectSpreadsheet = useCallback(async (preferredSheet = sheetName, quiet = false) => {
+    const enteredSpreadsheet = spreadsheetInput.trim();
     setSheetConnection({ state: "checking", message: "Google Sheetsへの接続を確認中…" });
     try {
       const response = await postJson<{ ok: true } & SheetInfo>("/api/sheets/inspect", {
@@ -728,6 +831,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       setSheetInfo(info);
       setSpreadsheetInput(info.spreadsheetId);
       setSheetName(info.sheetName);
+      rememberInput("spreadsheet", enteredSpreadsheet || info.spreadsheetId, `${info.spreadsheetName} / ${info.sheetName}`);
       setMappings((current) => Object.fromEntries(rulesRef.current.map((rule, index) => {
         const exact = info.headers.find((header) => header.label === rule.name)?.label;
         return [rule.id, exact || current[rule.id] || info.headers[index + 2]?.label || ""];
@@ -740,7 +844,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       setSheetConnection({ state: "error", message: `接続できません：${message}` });
       if (!quiet) setNotice({ kind: "warning", text: message });
     }
-  }, [sheetName, spreadsheetInput]);
+  }, [sheetName, spreadsheetInput, rememberInput]);
 
   useEffect(() => {
     if (!live || !auth?.connected || !spreadsheetInput.trim()) {
@@ -826,6 +930,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       }
       setSaved(true);
       setSavedRules((current) => [response.rule, ...current.filter((item) => item.id !== response.rule.id)]);
+      if (sender.trim()) rememberInput("sender", sender);
+      if (subject.trim()) rememberInput("subject", subject);
+      if (spreadsheetInput.trim()) rememberInput("spreadsheet", spreadsheetInput, `${response.rule.spreadsheetName || "Spreadsheet"}${response.rule.sheetName ? ` / ${response.rule.sheetName}` : ""}`);
       setNotice({ kind: "success", text: "抽出条件と列の紐付けを保存しました。" });
       onDataChanged?.();
       scrollToRef(savedRulesRef);
@@ -1067,7 +1174,17 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           <button type="button" role="tab" aria-selected={conditionMode === "subject"} className={conditionMode === "subject" ? "is-active" : ""} onClick={() => { setConditionMode("subject"); setSender(""); markChanged(); }}>件名で探す</button>
         </div>
         <div className="condition-fields">
-          {conditionMode === "sender" ? <label><span>差出人のメールアドレス、または表示名</span><input value={sender} onChange={(event) => { setSender(event.target.value); markChanged(); }} placeholder="notice@example.com" /></label> : <label><span>件名に含まれる文字</span><input value={subject} onChange={(event) => { setSubject(event.target.value); markChanged(); }} placeholder="例：新しい応募" /></label>}
+          {conditionMode === "sender" ? (
+            <div className="suggestion-field">
+              <label><span>差出人のメールアドレス、または表示名</span><input value={sender} onChange={(event) => { setSender(event.target.value); markChanged(); }} placeholder="notice@example.com" autoComplete="off" /></label>
+              {live ? <InputSuggestions options={senderSuggestions} value={sender} onSelect={(value) => { setSender(value); markChanged(); }} /> : null}
+            </div>
+          ) : (
+            <div className="suggestion-field">
+              <label><span>件名に含まれる文字</span><input value={subject} onChange={(event) => { setSubject(event.target.value); markChanged(); }} placeholder="例：新しい応募" autoComplete="off" /></label>
+              {live ? <InputSuggestions options={subjectSuggestions} value={subject} onSelect={(value) => { setSubject(value); markChanged(); }} /> : null}
+            </div>
+          )}
           {live ? <button type="button" className="condition-search-button" onClick={loadGmail} disabled={!auth?.connected || Boolean(busy)}>{busy === "gmail" ? "検索中…" : "一致する実メールを探す"}</button> : null}
         </div>
         {live && gmailMessages.length ? (
@@ -1153,7 +1270,10 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           <div className="sheet-selector">
             {live ? (
               <>
-                <label><span>Spreadsheet URL</span><input value={spreadsheetInput} onChange={(event) => { setSpreadsheetInput(event.target.value); setSheetInfo(null); setSheetConnection({ state: event.target.value ? "checking" : "idle", message: event.target.value ? "入力が終わると自動確認します…" : "" }); markChanged(); }} placeholder="https://docs.google.com/spreadsheets/d/…" /></label>
+                <div className="suggestion-field">
+                  <label><span>Spreadsheet URL</span><input value={spreadsheetInput} onChange={(event) => { setSpreadsheetInput(event.target.value); setSheetInfo(null); setSheetConnection({ state: event.target.value ? "checking" : "idle", message: event.target.value ? "入力が終わると自動確認します…" : "" }); markChanged(); }} placeholder="https://docs.google.com/spreadsheets/d/…" autoComplete="off" /></label>
+                  <InputSuggestions options={spreadsheetSuggestions} value={spreadsheetInput} onSelect={(value) => { setSpreadsheetInput(value); setSheetInfo(null); setSheetConnection({ state: "checking", message: "保存した入力から接続を確認中…" }); markChanged(); }} />
+                </div>
                 <label><span>シート名</span>{sheetInfo?.sheets.length ? <select value={sheetName} onChange={(event) => { setSheetName(event.target.value); setSheetConnection({ state: "checking", message: "接続を確認中…" }); markChanged(); }}>{sheetInfo.sheets.map((name) => <option key={name}>{name}</option>)}</select> : <input value={sheetName} onChange={(event) => { setSheetName(event.target.value); setSheetConnection({ state: "checking", message: "入力が終わると自動確認します…" }); markChanged(); }} placeholder="例：応募一覧" />}</label>
                 {sheetConnection.state !== "idle" ? <div className={`sheet-connection-status is-${sheetConnection.state}`} role="status"><i>{sheetConnection.state === "connected" ? "✓" : sheetConnection.state === "error" ? "!" : "…"}</i><span>{sheetConnection.message}</span></div> : null}
               </>

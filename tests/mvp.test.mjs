@@ -277,6 +277,19 @@ test("searches Gmail with only the condition selected by the user", async () => 
   assert.match(page, /placeholder="notice@example\.com"/);
 });
 
+test("remembers successful inputs and offers reusable suggestions", async () => {
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  const styles = await readFile(path.join(root, "app", "globals.css"), "utf8");
+  assert.match(page, /mailsheet:input-history:v1:/);
+  assert.match(page, /function InputSuggestions/);
+  assert.match(page, /rememberInput\("sender", sender\)/);
+  assert.match(page, /rememberInput\("subject", subject\)/);
+  assert.match(page, /rememberInput\("spreadsheet", enteredSpreadsheet/);
+  assert.match(page, /savedRules\.filter\(\(item\) => item\.spreadsheetId\)/);
+  assert.match(page, /\.slice\(0, 10\)/);
+  assert.match(styles, /\.input-suggestions/);
+});
+
 test("saves current sheet mappings when enabling a rule and guides the next action", async () => {
   const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
   const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
