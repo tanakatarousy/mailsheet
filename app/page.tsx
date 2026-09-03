@@ -758,6 +758,12 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     }
   };
 
+  const sheetMappingsAreReady = (info: SheetInfo | null, currentMappings: Record<number, string>) => {
+    if (!info || info.headers[0]?.label !== "転記日時" || info.headers[1]?.label !== "転記ルール") return false;
+    const outputHeaders = new Set(info.headers.slice(2).map((header) => header.label).filter(Boolean));
+    return rules.length > 0 && rules.every((rule) => outputHeaders.has(String(currentMappings[rule.id] || "").trim()));
+  };
+
   const saveRule = async (activeOverride = autoAdd) => {
     if (!live) {
       setSaved(true);
@@ -775,7 +781,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       let effectiveSheetInfo = sheetInfo;
       let effectiveMappings = mappings;
       const needsMappingSetup = activeOverride && sheetConnection.state === "connected"
-        && (!sheetInfo?.headers.length || rules.some((rule) => !String(mappings[rule.id] || "").trim()));
+        && !sheetMappingsAreReady(sheetInfo, mappings);
       if (needsMappingSetup) {
         const configured = await writeSheetHeaders();
         effectiveSheetInfo = configured.info;
@@ -909,8 +915,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       : [{ value: "", label: "見出し取得後に選択" }];
 
   const hasSearchCondition = conditionMode === "sender" ? Boolean(sender.trim()) : Boolean(subject.trim());
-  const mappingsComplete = Boolean(sheetInfo?.headers.length)
-    && rules.every((rule) => Boolean(String(mappings[rule.id] || "").trim()));
+  const mappingsComplete = sheetMappingsAreReady(sheetInfo, mappings);
   const nextGuide = !auth?.connected
     ? { step: "01", title: "Googleアカウントを接続", detail: "Gmailの読取とGoogle Sheetsへの書込を許可します。", target: "connection" }
     : !hasSearchCondition

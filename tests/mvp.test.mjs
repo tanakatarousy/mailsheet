@@ -291,6 +291,10 @@ test("saves current sheet mappings when enabling a rule and guides the next acti
   assert.match(page, /1行目と列を自動設定/);
   assert.match(page, /<option value="">出力列を選択<\/option>/);
   assert.match(page, /const writeSheetHeaders = async/);
+  assert.match(page, /const sheetMappingsAreReady =/);
+  assert.match(page, /info\.headers\[0\]\?\.label !== "転記日時"/);
+  assert.match(page, /info\.headers\[1\]\?\.label !== "転記ルール"/);
+  assert.match(page, /!sheetMappingsAreReady\(sheetInfo, mappings\)/);
   assert.match(worker, /\/api\/sheets\/headers/);
   assert.match(worker, /const headings = \["転記日時", "転記ルール", \.\.\.fieldNames\]/);
   assert.match(worker, /const outputHeaders = new Set\(body\.sheetHeaders\.slice\(2\)/);
