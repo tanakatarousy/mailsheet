@@ -1569,7 +1569,46 @@ async function handleFeedbackSubmit(request, env) {
   if (Number(recent?.count || 0) >= 5) throw new HttpError(429, "短時間の送信上限に達しました。時間を置いてお試しください。", "rate_limited");
   await requireDb(env).prepare(
     "INSERT INTO feedback_requests (visitor_id, category, pain, current_process, desired_outcome, contact_email, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'new', ?)",
-  ).bind(visitorId, category, pain, currentProcess, desiredOutcome, contactEmail, new Date().toISOString()).run();
+  ).bind(visitorId || "anonymous", category, pain, currentProcess, desiredOutcome, contactEmail, new Date().toISOString()).run();
+  return json({ ok: true });
+}
+
+const TESTER_FEEDBACK_CATEGORIES = new Set(["不明点", "不具合", "質問・相談", "改善要望"]);
+
+async function handleUserFeedbackList(request, env) {
+  const user = await requireAuthorizedUser(request, env);
+  const ownerId = `app:${user.id}`;
+  const result = await requireDb(env).prepare(
+    "SELECT id, visitor_id, category, pain, current_process, desired_outcome, contact_email, status, created_at FROM feedback_requests WHERE visitor_id = ? ORDER BY created_at DESC LIMIT 30",
+  ).bind(ownerId).all();
+  return json({ ok: true, feedback: result.results || [] });
+}
+
+async function handleUserFeedbackSubmit(request, env) {
+  const user = await requireAuthorizedUser(request, env);
+  assertSameOrigin(request);
+  const body = await readJson(request, 20_000);
+  const category = String(body.category || "").trim();
+  const page = String(body.page || "").trim().slice(0, 100);
+  const operation = String(body.operation || "").trim().slice(0, 1_500);
+  const details = String(body.details || "").trim().slice(0, 3_000);
+  const expected = String(body.expected || "").trim().slice(0, 1_500);
+  if (!TESTER_FEEDBACK_CATEGORIES.has(category)) {
+    throw new HttpError(400, "投稿の種類を選択してください。", "invalid_feedback_category");
+  }
+  if (details.length < 5) {
+    throw new HttpError(400, "内容を5文字以上で入力してください。", "invalid_feedback_details");
+  }
+  const ownerId = `app:${user.id}`;
+  const recent = await requireDb(env).prepare("SELECT COUNT(*) AS count FROM feedback_requests WHERE visitor_id = ? AND created_at >= ?")
+    .bind(ownerId, new Date(Date.now() - 60 * 60_000).toISOString()).first();
+  if (Number(recent?.count || 0) >= 10) {
+    throw new HttpError(429, "短時間の投稿上限に達しました。時間を置いてお試しください。", "rate_limited");
+  }
+  const context = [page ? `対象画面：${page}` : "", operation ? `直前の操作：${operation}` : ""].filter(Boolean).join("\n");
+  await requireDb(env).prepare(
+    "INSERT INTO feedback_requests (visitor_id, category, pain, current_process, desired_outcome, contact_email, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'new', ?)",
+  ).bind(ownerId, category, details, context, expected, String(user.email || "").toLowerCase(), new Date().toISOString()).run();
   return json({ ok: true });
 }
 
@@ -1600,7 +1639,7 @@ async function handleAdminOverview(request, env) {
     db.prepare("SELECT event_type, COUNT(*) AS count FROM system_events WHERE substr(created_at, 1, 7) = ? GROUP BY event_type").bind(month).all(),
     db.prepare("SELECT visitor_id, path, referrer_host, device, created_at FROM public_visits ORDER BY created_at DESC LIMIT 100").all(),
     db.prepare("SELECT COUNT(*) AS seven_day_views, COUNT(DISTINCT visitor_id) AS seven_day_visitors, SUM(CASE WHEN substr(created_at, 1, 10) = ? THEN 1 ELSE 0 END) AS today_views FROM public_visits WHERE created_at >= ?").bind(today, sevenDaysAgo).first(),
-    db.prepare("SELECT id, category, pain, current_process, desired_outcome, contact_email, status, created_at FROM feedback_requests ORDER BY created_at DESC LIMIT 100").all(),
+    db.prepare("SELECT id, visitor_id, category, pain, current_process, desired_outcome, contact_email, status, created_at FROM feedback_requests ORDER BY created_at DESC LIMIT 100").all(),
   ]);
   const processing = Object.fromEntries((processingResult.results || []).map((row) => [row.status, Number(row.count)]));
   const events = Object.fromEntries((eventsResult.results || []).map((row) => [row.event_type, Number(row.count)]));
@@ -1707,6 +1746,22 @@ async function handleAdminPendingInvite(request, env) {
   throw new HttpError(400, "招待リストの操作を確認してください。", "invalid_action");
 }
 
+async function handleAdminFeedbackStatus(request, env) {
+  await requireAdmin(request, env);
+  assertSameOrigin(request);
+  const body = await readJson(request, 8_000);
+  const id = Number(body.id);
+  const status = String(body.status || "");
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "投稿IDを確認してください。", "invalid_feedback_id");
+  if (!["new", "in_progress", "resolved"].includes(status)) {
+    throw new HttpError(400, "対応状況を確認してください。", "invalid_feedback_status");
+  }
+  const existing = await requireDb(env).prepare("SELECT id FROM feedback_requests WHERE id = ?").bind(id).first();
+  if (!existing) throw new HttpError(404, "投稿が見つかりません。", "feedback_not_found");
+  await requireDb(env).prepare("UPDATE feedback_requests SET status = ? WHERE id = ?").bind(status, id).run();
+  return json({ ok: true, id, status });
+}
+
 async function routeApi(request, env) {
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
@@ -1720,6 +1775,8 @@ async function routeApi(request, env) {
   if (method === "GET" && url.pathname === "/api/auth/status") return handleAuthStatus(request, env);
   if (method === "POST" && url.pathname === "/api/auth/disconnect") return handleDisconnect(request, env);
   if (method === "POST" && url.pathname === "/api/auth/logout") return handleLogout(request);
+  if (method === "GET" && url.pathname === "/api/feedback") return handleUserFeedbackList(request, env);
+  if (method === "POST" && url.pathname === "/api/feedback") return handleUserFeedbackSubmit(request, env);
   if (method === "GET" && url.pathname === "/api/gmail/messages") return handleGmailMessages(request, env);
   if (method === "GET" && url.pathname === "/api/gmail/push/config") return handlePushConfig(request, env);
   if (method === "POST" && url.pathname === "/api/gmail/watch") return handleWatchStart(request, env);
@@ -1740,6 +1797,7 @@ async function routeApi(request, env) {
   if (method === "POST" && url.pathname === "/api/admin/invite") return handleAdminInvite(request, env);
   if (method === "POST" && url.pathname === "/api/admin/users/status") return handleAdminUserStatus(request, env);
   if (method === "POST" && url.pathname === "/api/admin/invite/manage") return handleAdminPendingInvite(request, env);
+  if (method === "POST" && url.pathname === "/api/admin/feedback/status") return handleAdminFeedbackStatus(request, env);
   return apiError("APIが見つかりません。", 404, "not_found");
 }
 

@@ -45,6 +45,18 @@ export type AdminUser = {
   last_process_status?: string;
 };
 
+export type FeedbackItem = {
+  id: number;
+  visitor_id: string;
+  category: string;
+  pain: string;
+  current_process: string;
+  desired_outcome: string;
+  contact_email: string;
+  status: "new" | "in_progress" | "resolved";
+  created_at: string;
+};
+
 export type AdminOverview = {
   ok: true;
   users: AdminUser[];
@@ -55,7 +67,7 @@ export type AdminOverview = {
     sevenDayVisitors: number;
     recent: Array<{ visitor_id: string; path: string; referrer_host: string; device: string; created_at: string }>;
   };
-  feedback: Array<{ id: number; category: string; pain: string; current_process: string; desired_outcome: string; contact_email: string; status: string; created_at: string }>;
+  feedback: FeedbackItem[];
   metrics: {
     users: number;
     activeUsers: number;

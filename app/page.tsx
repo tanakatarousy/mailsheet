@@ -6,6 +6,7 @@ import {
   type AuthStatus,
   type AdminOverview,
   type DashboardData,
+  type FeedbackItem,
   type GmailMessage,
   type HistoryRow as ApiHistoryRow,
   type SavedRule,
@@ -22,7 +23,7 @@ import {
   type ExtractionRule,
 } from "@/lib/extraction";
 
-type AppView = "dashboard" | "connections" | "rules" | "history" | "settings" | "guide" | "admin";
+type AppView = "dashboard" | "connections" | "rules" | "history" | "settings" | "guide" | "feedback" | "admin";
 
 const errorText = (error: unknown) => error instanceof ApiError ? error.message : "処理に失敗しました。もう一度お試しください。";
 const formatAdminDate = (value?: string | number) => {
@@ -191,6 +192,12 @@ function Icon({ name, size = 22 }: { name: string; size?: number }) {
         <circle cx="12" cy="12" r="9" />
         <path d="M9.7 9a2.4 2.4 0 1 1 3.5 2.1c-.8.4-1.2 1-1.2 1.9" />
         <path d="M12 17h.01" />
+      </>
+    ),
+    feedback: (
+      <>
+        <path d="M4 5h16v11H8l-4 3V5Z" />
+        <path d="M8 9h8M8 12h5" />
       </>
     ),
     settings: (
@@ -437,22 +444,25 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     : "";
 
   useEffect(() => {
-    if (!inputHistoryStorageKey) {
-      setRecentInputHistory(emptyRecentInputHistory());
-      return;
-    }
-    try {
-      const stored = JSON.parse(window.localStorage.getItem(inputHistoryStorageKey) || "null") as Partial<RecentInputHistory> | null;
-      setRecentInputHistory({
-        senders: Array.isArray(stored?.senders) ? stored.senders.filter((item): item is string => typeof item === "string").slice(0, 10) : [],
-        subjects: Array.isArray(stored?.subjects) ? stored.subjects.filter((item): item is string => typeof item === "string").slice(0, 10) : [],
-        spreadsheets: Array.isArray(stored?.spreadsheets)
-          ? stored.spreadsheets.filter((item): item is { value: string; label: string } => Boolean(item && typeof item.value === "string" && typeof item.label === "string")).slice(0, 10)
-          : [],
-      });
-    } catch {
-      setRecentInputHistory(emptyRecentInputHistory());
-    }
+    const timer = window.setTimeout(() => {
+      if (!inputHistoryStorageKey) {
+        setRecentInputHistory(emptyRecentInputHistory());
+        return;
+      }
+      try {
+        const stored = JSON.parse(window.localStorage.getItem(inputHistoryStorageKey) || "null") as Partial<RecentInputHistory> | null;
+        setRecentInputHistory({
+          senders: Array.isArray(stored?.senders) ? stored.senders.filter((item): item is string => typeof item === "string").slice(0, 10) : [],
+          subjects: Array.isArray(stored?.subjects) ? stored.subjects.filter((item): item is string => typeof item === "string").slice(0, 10) : [],
+          spreadsheets: Array.isArray(stored?.spreadsheets)
+            ? stored.spreadsheets.filter((item): item is { value: string; label: string } => Boolean(item && typeof item.value === "string" && typeof item.label === "string")).slice(0, 10)
+            : [],
+        });
+      } catch {
+        setRecentInputHistory(emptyRecentInputHistory());
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [inputHistoryStorageKey]);
 
   const rememberInput = useCallback((kind: "sender" | "subject" | "spreadsheet", rawValue: string, label = "") => {
@@ -1078,7 +1088,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                     : { step: "完了", title: "設定は完了しています", detail: "条件に一致する新着メールを受信すると、自動で転記します。", target: "saved" };
 
   const goToNextGuide = () => {
-    if (nextGuide.target === "connection") window.location.href = "/api/oauth/google/start";
+    if (nextGuide.target === "connection") window.location.assign("/api/oauth/google/start");
     else if (nextGuide.target === "condition") scrollToRef(mailConditionRef);
     else if (nextGuide.target === "selection") scrollToRef(selectionBuilderRef);
     else if (nextGuide.target === "rules") scrollToRef(extractionRulesRef);
@@ -1686,6 +1696,79 @@ function LegalPage({ kind, onBack }: { kind: LegalKind; onBack: () => void }) {
   );
 }
 
+const feedbackStatusLabel = (status: FeedbackItem["status"]) => status === "resolved" ? "解決済み" : status === "in_progress" ? "対応中" : "未対応";
+
+function TesterFeedback({ auth }: { auth: AuthStatus | null }) {
+  const [form, setForm] = useState({ category: "不明点", page: "転記ルール", details: "", operation: "", expected: "" });
+  const [items, setItems] = useState<FeedbackItem[]>([]);
+  const [state, setState] = useState<"loading" | "idle" | "sending" | "sent" | "error">("loading");
+  const [message, setMessage] = useState("");
+
+  const loadFeedback = useCallback(async () => {
+    try {
+      const response = await apiFetch<{ ok: true; feedback: FeedbackItem[] }>("/api/feedback");
+      setItems(response.feedback);
+      setState("idle");
+    } catch (error) {
+      setMessage(errorText(error));
+      setState("error");
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadFeedback(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadFeedback]);
+
+  const submitFeedback = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setState("sending");
+    setMessage("");
+    try {
+      await postJson<{ ok: true }>("/api/feedback", form);
+      setForm((current) => ({ ...current, details: "", operation: "", expected: "" }));
+      setMessage("投稿しました。管理者が内容を確認すると、下の履歴で対応状況を確認できます。");
+      setState("sent");
+      const response = await apiFetch<{ ok: true; feedback: FeedbackItem[] }>("/api/feedback");
+      setItems(response.feedback);
+    } catch (error) {
+      setMessage(errorText(error));
+      setState("error");
+    }
+  };
+
+  return (
+    <section className="app-view tester-feedback-view">
+      <div className="app-view-heading"><div><span>TESTER FEEDBACK</span><h1>不明点・問題を投稿</h1><p>操作方法の質問、分かりにくかった点、不具合、改善要望を管理者へ送れます。</p></div></div>
+      <div className="tester-feedback-layout">
+        <form className="tester-feedback-form" onSubmit={submitFeedback}>
+          <div className="tester-feedback-form__heading"><small>NEW POST</small><h2>気づいたことを教えてください</h2><p>詳しい原因が分からなくても大丈夫です。どの画面で何をしたかだけでも、調査の手掛かりになります。</p></div>
+          <div className="tester-feedback-row">
+            <label><span>投稿の種類 <b>必須</b></span><select value={form.category} onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}><option>不明点</option><option>不具合</option><option>質問・相談</option><option>改善要望</option></select></label>
+            <label><span>対象の画面</span><select value={form.page} onChange={(event) => setForm((current) => ({ ...current, page: event.target.value }))}><option>Google接続</option><option>転記ルール</option><option>処理履歴</option><option>設定</option><option>使い方ガイド</option><option>ログイン</option><option>その他</option></select></label>
+          </div>
+          <label><span>内容 <b>必須</b></span><textarea value={form.details} onChange={(event) => setForm((current) => ({ ...current, details: event.target.value }))} placeholder="例：自動転記ONにしましたが、新しいメールを受信してもシートに追加されません。" required minLength={5} rows={5} /></label>
+          <label><span>直前に行った操作 <small>任意</small></span><textarea value={form.operation} onChange={(event) => setForm((current) => ({ ...current, operation: event.target.value }))} placeholder="例：転記ルールを保存 → 自動転記ON → テストメールを受信" rows={3} /></label>
+          <label><span>期待していた結果 <small>任意</small></span><textarea value={form.expected} onChange={(event) => setForm((current) => ({ ...current, expected: event.target.value }))} placeholder="例：受信したメールがシートの最終行に1件追加される" rows={3} /></label>
+          <div className="tester-feedback-submit"><div><strong>{auth?.appUser.email || auth?.googleEmail || "ログイン中の利用者"}</strong><small>このメールアドレスと投稿内容を管理者が確認します。</small></div><button className="button button--blue" type="submit" disabled={state === "sending" || form.details.trim().length < 5}>{state === "sending" ? "送信中…" : "管理者へ投稿"} <Icon name="arrow" size={16} /></button></div>
+          {message ? <p className={state === "sent" ? "tester-feedback-message is-success" : "tester-feedback-message is-error"} role="status">{message}</p> : null}
+        </form>
+
+        <aside className="tester-feedback-tips">
+          <small>WRITING TIPS</small><h2>この3点があると確認が早くなります</h2>
+          <ol><li><span>1</span><p><strong>どの画面か</strong>Google接続、転記ルールなど。</p></li><li><span>2</span><p><strong>何をしたか</strong>押したボタンや入力した条件。</p></li><li><span>3</span><p><strong>何が起きたか</strong>表示された文章や実際の結果。</p></li></ol>
+          <p>メール本文やSpreadsheetに個人情報が含まれる場合は、氏名・電話番号などを伏せて投稿してください。</p>
+        </aside>
+      </div>
+
+      <section className="tester-feedback-history">
+        <div className="tester-feedback-history__heading"><div><small>MY POSTS</small><h2>自分の投稿履歴</h2><p>管理者側で変更された対応状況が表示されます。</p></div><button type="button" onClick={() => void loadFeedback()}>再読み込み</button></div>
+        {state === "loading" ? <p className="tester-feedback-empty">読み込み中…</p> : items.length ? <div className="tester-feedback-list">{items.map((item) => <article key={item.id}><header><div><span>{item.category}</span><strong className={`feedback-status is-${item.status}`}>{feedbackStatusLabel(item.status)}</strong></div><time>{formatAdminDate(item.created_at)}</time></header><p>{item.pain}</p>{item.current_process ? <small>{item.current_process}</small> : null}{item.desired_outcome ? <small><b>期待：</b>{item.desired_outcome}</small> : null}</article>)}</div> : <p className="tester-feedback-empty">投稿はまだありません。不明点があれば、上のフォームからそのまま送ってください。</p>}
+      </section>
+    </section>
+  );
+}
+
 function GettingStartedGuide({ auth, onNavigate }: { auth: AuthStatus | null; onNavigate: (view: AppView) => void }) {
   const gmailReady = Boolean(auth?.connected && auth.grantedScopes.some((scope) => scope.includes("gmail.readonly")));
   const sheetsReady = Boolean(auth?.connected && auth.grantedScopes.some((scope) => scope.includes("spreadsheets")));
@@ -1767,7 +1850,7 @@ function GettingStartedGuide({ auth, onNavigate }: { auth: AuthStatus | null; on
               <li><strong>シートで使う項目名を付ける</strong><p>「氏名」「電話番号」「住所」など、列名として分かりやすい名前にします。</p></li>
               <li><strong>必要な項目を同じ手順で追加する</strong><p>項目は左のハンドルまたは上下ボタンで並び替えられます。抽出結果で値が取れていることを確認します。</p></li>
             </ol>
-            <div className="guide-selection-sample"><small>本文中の値を選択</small><p>【氏名】 <mark>池田　隼人</mark><br />【電話番号】 090-0000-0000</p><div><span>選択した文字</span><strong>池田　隼人</strong><button type="button" tabIndex={-1}>この文字を取得項目にする</button></div></div>
+            <div className="guide-selection-sample"><small>本文中の値を選択</small><p>【氏名】 <mark>池田 隼人</mark><br />【電話番号】 090-0000-0000</p><div><span>選択した文字</span><strong>池田 隼人</strong><button type="button" tabIndex={-1}>この文字を取得項目にする</button></div></div>
           </div>
         </article>
 
@@ -1805,7 +1888,7 @@ function GettingStartedGuide({ auth, onNavigate }: { auth: AuthStatus | null; on
   );
 }
 
-const APP_VIEWS: AppView[] = ["dashboard", "connections", "rules", "history", "settings", "guide", "admin"];
+const APP_VIEWS: AppView[] = ["dashboard", "connections", "rules", "history", "settings", "guide", "feedback", "admin"];
 
 function AppShell({ onBack }: { onBack: () => void }) {
   const oauthResult = new URLSearchParams(window.location.search).get("google");
@@ -1829,6 +1912,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
   const [adminData, setAdminData] = useState<AdminOverview | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
   const [adminBusy, setAdminBusy] = useState(false);
+  const [adminFeedbackFilter, setAdminFeedbackFilter] = useState<"all" | FeedbackItem["status"]>("all");
 
   const setView = (nextView: AppView) => {
     setViewState(nextView);
@@ -1931,6 +2015,14 @@ function AppShell({ onBack }: { onBack: () => void }) {
     } catch (error) { setAppNotice({ kind: "warning", text: errorText(error) }); }
   };
 
+  const changeFeedbackStatus = async (id: number, status: FeedbackItem["status"]) => {
+    try {
+      await postJson("/api/admin/feedback/status", { id, status });
+      setAppNotice({ kind: "success", text: `投稿 #${id} を「${feedbackStatusLabel(status)}」に変更しました。` });
+      await loadAdmin();
+    } catch (error) { setAppNotice({ kind: "warning", text: errorText(error) }); }
+  };
+
   const startGoogleConnection = () => {
     if (!auth?.configured) {
       setAppNotice({ kind: "warning", text: "Google Cloud側のOAuthクライアント設定が必要です。下のCallback URLを登録してください。" });
@@ -1980,6 +2072,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
     { id: "history", label: "処理履歴", icon: "history" },
     { id: "settings", label: "設定", icon: "settings" },
     { id: "guide", label: "使い方ガイド", icon: "guide" },
+    { id: "feedback", label: "フィードバック", icon: "feedback" },
     ...(auth?.access.role === "admin" ? [{ id: "admin" as AppView, label: "管理", icon: "settings" }] : []),
   ];
 
@@ -2127,6 +2220,8 @@ function AppShell({ onBack }: { onBack: () => void }) {
 
           {view === "guide" ? <GettingStartedGuide auth={auth} onNavigate={setView} /> : null}
 
+          {view === "feedback" ? <TesterFeedback auth={auth} /> : null}
+
           {view === "admin" && auth?.access.role === "admin" ? (
             <section className="app-view admin-view">
               <div className="app-view-heading"><div><span>ADMIN CONSOLE</span><h1>運用管理</h1><p>招待、アクセス、Google接続、受信通知、処理状況と料金リスクを確認します。</p></div><button className="button button--outline button--small" type="button" onClick={loadAdmin}>再読み込み</button></div>
@@ -2144,7 +2239,11 @@ function AppShell({ onBack }: { onBack: () => void }) {
               </div>
               <section className="admin-panel"><div className="admin-panel__heading"><div><small>ACCESS LOG</small><h2>最近のアクセス</h2></div></div><div className="access-log">{adminData?.accessHistory.length ? adminData.accessHistory.slice(0, 30).map((event, index) => <div key={`${event.email}-${event.created_at}-${index}`}><strong>{event.email}</strong><span>{formatAdminDate(event.created_at)}</span></div>) : <p>アクセス履歴はまだありません。</p>}</div></section>
               <section className="admin-panel"><div className="admin-panel__heading"><div><small>PUBLIC TRAFFIC</small><h2>公開LPの閲覧</h2><p>IPアドレスを保存せず、匿名IDで集計しています。</p></div><div className="traffic-summary"><span>今日 <strong>{adminData?.publicTraffic.todayViews ?? 0}</strong></span><span>7日間 <strong>{adminData?.publicTraffic.sevenDayViews ?? 0}</strong></span><span>閲覧者 <strong>{adminData?.publicTraffic.sevenDayVisitors ?? 0}</strong></span></div></div><div className="access-log">{adminData?.publicTraffic.recent.length ? adminData.publicTraffic.recent.slice(0, 40).map((event, index) => <div key={`${event.visitor_id}-${event.created_at}-${index}`}><strong>{event.path} <small>{event.device === "mobile" ? "スマホ" : "PC"}{event.referrer_host ? ` / ${event.referrer_host}` : " / 直接アクセス"}</small></strong><span>{formatAdminDate(event.created_at)}</span></div>) : <p>公開ページのアクセス履歴はまだありません。</p>}</div></section>
-              <section className="admin-panel"><div className="admin-panel__heading"><div><small>REQUESTS</small><h2>要望・お困りごと</h2></div><span>{adminData?.feedback.length ?? 0}件</span></div><div className="feedback-admin-list">{adminData?.feedback.length ? adminData.feedback.map((item) => <article key={item.id}><header><span>{item.category}</span><time>{formatAdminDate(item.created_at)}</time></header><strong>{item.pain}</strong>{item.current_process ? <p><b>現在：</b>{item.current_process}</p> : null}{item.desired_outcome ? <p><b>希望：</b>{item.desired_outcome}</p> : null}{item.contact_email ? <a href={`mailto:${item.contact_email}`}>{item.contact_email}</a> : <small>返信先なし</small>}</article>) : <p>要望はまだ届いていません。</p>}</div></section>
+              <section className="admin-panel admin-feedback-panel">
+                <div className="admin-panel__heading"><div><small>TESTER FEEDBACK</small><h2>不明点・不具合・質問</h2><p>テスターと公開ページから届いた投稿を確認し、対応状況を更新できます。</p></div><div className="admin-feedback-summary"><span>未対応 <strong>{adminData?.feedback.filter((item) => item.status === "new").length ?? 0}</strong></span><span>全件 <strong>{adminData?.feedback.length ?? 0}</strong></span></div></div>
+                <div className="admin-feedback-filters" aria-label="投稿の絞り込み">{(["all", "new", "in_progress", "resolved"] as const).map((status) => <button type="button" key={status} className={adminFeedbackFilter === status ? "is-active" : ""} onClick={() => setAdminFeedbackFilter(status)}>{status === "all" ? "すべて" : feedbackStatusLabel(status)}</button>)}</div>
+                <div className="feedback-admin-list">{adminData?.feedback.length ? adminData.feedback.filter((item) => adminFeedbackFilter === "all" || item.status === adminFeedbackFilter).map((item) => <article className={item.visitor_id.startsWith("app:") ? "is-tester-post" : ""} key={item.id}><header><div><span>{item.category}</span><strong className={`feedback-status is-${item.status}`}>{feedbackStatusLabel(item.status)}</strong>{item.visitor_id.startsWith("app:") ? <em>テスター</em> : <em>公開ページ</em>}</div><time>#{item.id}・{formatAdminDate(item.created_at)}</time></header><strong>{item.pain}</strong>{item.current_process ? <p className="feedback-context">{item.current_process}</p> : null}{item.desired_outcome ? <p><b>期待・希望：</b>{item.desired_outcome}</p> : null}<footer>{item.contact_email ? <a href={`mailto:${item.contact_email}`}>{item.contact_email}</a> : <small>返信先なし</small>}<div>{(["new", "in_progress", "resolved"] as const).map((status) => <button type="button" key={status} className={item.status === status ? "is-active" : ""} onClick={() => void changeFeedbackStatus(item.id, status)}>{feedbackStatusLabel(status)}</button>)}</div></footer></article>) : <p>投稿はまだ届いていません。</p>}</div>
+              </section>
             </section>
           ) : null}
           </> : null}

@@ -293,6 +293,30 @@ test("provides a beginner guide without exposing tester personal data", async ()
   assert.match(styles, /\.guide-connection-check/);
 });
 
+test("lets testers submit questions and admins manage their status", async () => {
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
+  const styles = await readFile(path.join(root, "app", "globals.css"), "utf8");
+  const feedbackMigration = await readFile(path.join(root, "drizzle", "0004_public_analytics_feedback.sql"), "utf8");
+  assert.match(page, /フィードバック/);
+  assert.match(page, /不明点・問題を投稿/);
+  assert.match(page, /直前に行った操作/);
+  assert.match(page, /自分の投稿履歴/);
+  assert.match(page, /changeFeedbackStatus/);
+  assert.match(page, /未対応/);
+  assert.match(page, /対応中/);
+  assert.match(page, /解決済み/);
+  assert.match(worker, /handleUserFeedbackList/);
+  assert.match(worker, /handleUserFeedbackSubmit/);
+  assert.match(worker, /handleAdminFeedbackStatus/);
+  assert.match(worker, /\/api\/feedback/);
+  assert.match(worker, /\/api\/admin\/feedback\/status/);
+  assert.match(worker, /`app:\$\{user\.id\}`/);
+  assert.match(feedbackMigration, /`status` text DEFAULT 'new' NOT NULL/);
+  assert.match(styles, /\.tester-feedback-form/);
+  assert.match(styles, /\.feedback-status\.is-resolved/);
+});
+
 test("searches Gmail with only the condition selected by the user", async () => {
   const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
   assert.match(page, /const \[sender, setSender\] = useState\(""\)/);
