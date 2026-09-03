@@ -345,14 +345,14 @@ function SiteHeader({ onOpenApp }: { onOpenApp: () => void }) {
 
 function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean; onDataChanged?: () => void }) {
   const live = !embedded;
-  const starterRules = initialRules;
+  const starterRules = embedded ? initialRules : [];
   const starterEmail = sampleEmail;
   const [ruleId, setRuleId] = useState<number | null>(null);
-  const [ruleName, setRuleName] = useState("求人応募メール");
+  const [ruleName, setRuleName] = useState(embedded ? "求人応募メール" : "新しい転記ルール");
   const [emailBody, setEmailBody] = useState(starterEmail);
   const [emailMeta, setEmailMeta] = useState({ subject: "新しい応募", from: "notice@example.com" });
   const [rules, setRules] = useState<ExtractionRule[]>(starterRules);
-  const [selectedRuleId, setSelectedRuleId] = useState(starterRules[0].id);
+  const [selectedRuleId, setSelectedRuleId] = useState(starterRules[0]?.id ?? 0);
   const [sender, setSender] = useState("");
   const [subject, setSubject] = useState("");
   const [conditionMode, setConditionMode] = useState<"sender" | "subject">("sender");
@@ -360,7 +360,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [saved, setSaved] = useState(false);
   const [autoAdd, setAutoAdd] = useState(false);
   const [mappings, setMappings] = useState<Record<number, string>>(
-    Object.fromEntries(starterRules.map((rule, index) => [rule.id, embedded ? `${String.fromCharCode(65 + index)}列` : ""])),
+    Object.fromEntries(starterRules.map((rule, index) => [rule.id, embedded ? `${String.fromCharCode(67 + index)}列` : ""])),
   );
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [gmailMessages, setGmailMessages] = useState<GmailMessage[]>([]);
@@ -460,15 +460,19 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   };
 
   const startNewRule = () => {
-    const blankRule: ExtractionRule = { id: 1, name: "取得項目1", method: "after", start: "項目名：", end: "", pattern: "" };
+    if (savedRules.length >= 10) {
+      setNotice({ kind: "warning", text: "転記ルールは10件まで登録できます。不要なルールを削除してから新規作成してください。" });
+      scrollToRef(savedRulesRef);
+      return;
+    }
     setRuleId(null);
     setRuleName("新しい転記ルール");
     setSender("");
     setSubject("");
     setConditionMode("sender");
-    setRules([blankRule]);
-    setSelectedRuleId(blankRule.id);
-    setMappings({ 1: "" });
+    setRules([]);
+    setSelectedRuleId(0);
+    setMappings({});
     setSpreadsheetInput("");
     setSheetName("");
     setSheetInfo(null);
@@ -477,7 +481,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setAutoAdd(false);
     setTestStatus("idle");
     setSaved(false);
-    setNotice({ kind: "success", text: "空のルールを作成しました。用途に合わせて項目を自由に追加できます。" });
+    setNotice({ kind: "success", text: "新しい転記ルールを作成しました。メール本文から必要な値を選ぶか、「項目を追加」を押してください。" });
   };
 
   const applyTemplate = (template: "recruit" | "inquiry" | "order" | "reservation" | "invoice") => {
@@ -554,7 +558,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     const id = Math.max(0, ...rules.map((rule) => rule.id)) + 1;
     const nextRule: ExtractionRule = { id, name: `項目${id}`, method: "after", start: "項目名：", end: "", pattern: "" };
     setRules((current) => [...current, nextRule]);
-    setMappings((current) => ({ ...current, [id]: sheetInfo?.headers[rules.length]?.label ?? `${String.fromCharCode(65 + rules.length)}列` }));
+    setMappings((current) => ({ ...current, [id]: sheetInfo?.headers[rules.length + 2]?.label ?? "" }));
     setSelectedRuleId(id);
     markChanged();
   };
@@ -613,11 +617,10 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   };
 
   const removeRule = (id: number) => {
-    if (rules.length === 1) return;
     const next = rules.filter((rule) => rule.id !== id);
     setRules(next);
     setMappings((current) => Object.fromEntries(Object.entries(current).filter(([key]) => Number(key) !== id)));
-    if (selectedRuleId === id) setSelectedRuleId(next[0].id);
+    if (selectedRuleId === id) setSelectedRuleId(next[0]?.id ?? 0);
     markChanged();
   };
 
@@ -708,7 +711,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       setSheetName(info.sheetName);
       setMappings((current) => Object.fromEntries(rulesRef.current.map((rule, index) => {
         const exact = info.headers.find((header) => header.label === rule.name)?.label;
-        return [rule.id, exact || current[rule.id] || info.headers[index + 1]?.label || ""];
+        return [rule.id, exact || current[rule.id] || info.headers[index + 2]?.label || ""];
       })));
       setSheetConnection({ state: "connected", message: `接続済み：${info.spreadsheetName} / ${info.sheetName}` });
       if (!quiet) setNotice({ kind: "success", text: `「${info.spreadsheetName} / ${info.sheetName}」へ接続できました。` });
@@ -735,7 +738,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       fieldNames: rules.map((rule) => rule.name),
     });
     const info: SheetInfo = response;
-    const nextMappings = Object.fromEntries(rules.map((rule, index) => [rule.id, info.headers[index + 1]?.label || ""]));
+    const nextMappings = Object.fromEntries(rules.map((rule, index) => [rule.id, info.headers[index + 2]?.label || ""]));
     setSheetInfo(info);
     setMappings(nextMappings);
     setSheetConnection({ state: "connected", message: `接続済み：${info.spreadsheetName} / ${info.sheetName}` });
@@ -759,6 +762,11 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     if (!live) {
       setSaved(true);
       window.setTimeout(() => setSaved(false), 1800);
+      return;
+    }
+    if (!rules.length) {
+      setNotice({ kind: "warning", text: "取得項目を1つ以上追加してから保存してください。" });
+      scrollToRef(extractionRulesRef);
       return;
     }
     setBusy("save");
@@ -853,12 +861,13 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setNotice(null);
     try {
       const values = sheetInfo?.headers.length
-        ? sheetInfo.headers.slice(1).map((header) => results.find(({ rule }) => mappings[rule.id] === header.label)?.value || "")
+        ? sheetInfo.headers.slice(2).map((header) => results.find(({ rule }) => mappings[rule.id] === header.label)?.value || "")
         : results.map((item) => item.value);
       const response = await postJson<{ ok: true; updatedRange: string }>("/api/sheets/test", {
         ruleId,
         spreadsheetId: sheetInfo?.spreadsheetId || spreadsheetInput,
         sheetName,
+        ruleName,
         values,
         subject: emailMeta.subject,
         destination: `${sheetInfo?.spreadsheetName || "Spreadsheet"} / ${sheetName}`,
@@ -894,9 +903,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   };
 
   const mappingOptions = sheetInfo?.headers.length
-    ? sheetInfo.headers.slice(1).map((header) => ({ value: header.label, label: `${header.column}列：${header.label}` }))
+    ? sheetInfo.headers.slice(2).map((header) => ({ value: header.label, label: `${header.column}列：${header.label}` }))
     : embedded
-      ? ["B", "C", "D", "E", "F", "G"].map((column) => ({ value: `${column}列`, label: `${column}列` }))
+      ? ["C", "D", "E", "F", "G", "H"].map((column) => ({ value: `${column}列`, label: `${column}列` }))
       : [{ value: "", label: "見出し取得後に選択" }];
 
   const hasSearchCondition = conditionMode === "sender" ? Boolean(sender.trim()) : Boolean(subject.trim());
@@ -910,12 +919,14 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         ? { step: "01", title: "一致する実メールを検索", detail: "入力した条件でGmailを検索し、サンプルにするメールを選びます。", target: "condition" }
         : selectedText
           ? { step: "02", title: "選択した文字に項目名を付ける", detail: "シートで使う項目名を確認して、取得項目へ追加します。", target: "selection" }
+          : !rules.length
+            ? { step: "03", title: "取得項目を追加", detail: "本文から値を選択するか、「項目を追加」を押して最初の取得項目を作ります。", target: "rules" }
           : !spreadsheetInput.trim()
             ? { step: "04", title: "転記先のSpreadsheetを指定", detail: "URLを貼ると、接続とシート名を自動確認します。", target: "mapping" }
             : sheetConnection.state !== "connected"
               ? { step: "04", title: "Spreadsheetの接続を確認", detail: "接続結果が表示されるまで待つか、URLとシート名を確認します。", target: "mapping" }
               : !mappingsComplete
-                ? { step: "04", title: "1行目と出力列を自動設定", detail: "A列を転記日時、B列以降を取得項目としてまとめて設定します。", target: "mapping" }
+                ? { step: "04", title: "1行目と出力列を自動設定", detail: "A列を転記日時、B列を転記ルール、C列以降を取得項目としてまとめて設定します。", target: "mapping" }
                 : !saved
                   ? { step: "05", title: "ルールを保存", detail: "抽出条件と出力列の設定を保存します。", target: "test" }
                   : !autoAdd
@@ -926,6 +937,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     if (nextGuide.target === "connection") window.location.href = "/api/oauth/google/start";
     else if (nextGuide.target === "condition") scrollToRef(mailConditionRef);
     else if (nextGuide.target === "selection") scrollToRef(selectionBuilderRef);
+    else if (nextGuide.target === "rules") scrollToRef(extractionRulesRef);
     else if (nextGuide.target === "mapping") scrollToRef(mappingSectionRef);
     else if (nextGuide.target === "test") scrollToRef(testSectionRef);
     else scrollToRef(savedRulesRef);
@@ -936,10 +948,10 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       <div className="workbench-topbar">
         <div>
           <span className="workbench-kicker">{ruleId ? `RULE ${String(ruleId).padStart(2, "0")}` : "NEW RULE"}</span>
-          {live ? <input className="rule-name-input" value={ruleName} onChange={(event) => { setRuleName(event.target.value); markChanged(); }} aria-label="ルール名" /> : <strong>{ruleName}</strong>}
+          {live ? <><input className="rule-name-input" value={ruleName} onChange={(event) => { setRuleName(event.target.value); markChanged(); }} aria-label="転記ルール名" /><small className="rule-name-note">この名前をSpreadsheetのB列へ出力します</small></> : <strong>{ruleName}</strong>}
         </div>
         <div className="workbench-topbar__actions">
-          {live ? <button type="button" className="button button--small button--outline" onClick={startNewRule}><Icon name="plus" size={16} /> 新規作成</button> : null}
+          {live ? <button type="button" className="button button--small button--outline" onClick={startNewRule} disabled={savedRules.length >= 10}><Icon name="plus" size={16} /> 新規作成</button> : null}
           <span className={autoAdd ? "switch-control is-on" : "switch-control"} title={live ? "ONにして保存すると、新着メールを自動転記します。" : undefined}>
             自動追加 {autoAdd ? "ON" : "OFF"}
             <button type="button" onClick={() => { setAutoAdd((value) => !value); markChanged(); }} aria-pressed={autoAdd}><i /></button>
@@ -969,7 +981,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       {live && savedRules.length ? (
         <section ref={savedRulesRef} className="saved-rules-manager" aria-label="保存済みルール管理">
           <div className="saved-rules-manager__heading">
-            <div><span>SAVED RULES</span><strong>保存済みルール {savedRules.length}件</strong></div>
+            <div><span>SAVED RULES</span><strong>保存済みルール {savedRules.length}/10件</strong><small>自動追加ON {savedRules.filter((item) => item.active).length}/3件</small></div>
           </div>
           <div className="saved-rules-list">
             {savedRules.map((item) => {
@@ -1067,6 +1079,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           <div className="section-mini-heading"><span>03</span><div><small>EXTRACT RULES</small><h3 id="rules-title">取得項目を自由に指定</h3></div></div>
           <p className="rule-reorder-hint">↕ 左のハンドルをつかんで、項目を上下に並び替えられます。</p>
           <section ref={extractionRulesRef} className="rule-list" role="list" aria-label="抽出項目一覧">
+            {!rules.length ? <p className="rule-list-empty">取得項目はまだありません。本文から値を選択するか、下の「項目を追加」を押してください。</p> : null}
             {rules.map((rule, index) => {
               const value = extractValue(emailBody, rule);
               return (
@@ -1078,7 +1091,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                   <span className="rule-order-actions">
                     <button type="button" onClick={() => moveRule(rule.id, -1)} disabled={index === 0} aria-label={`${rule.name}を上へ`}><Icon name="up" size={15} /></button>
                     <button type="button" onClick={() => moveRule(rule.id, 1)} disabled={index === rules.length - 1} aria-label={`${rule.name}を下へ`}><Icon name="down" size={15} /></button>
-                    <button type="button" onClick={() => removeRule(rule.id)} disabled={rules.length === 1} aria-label={`${rule.name}を削除`}><Icon name="trash" size={15} /></button>
+                    <button type="button" onClick={() => removeRule(rule.id)} aria-label={`${rule.name}を削除`}><Icon name="trash" size={15} /></button>
                   </span>
                 </div>
               );
@@ -1122,6 +1135,10 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
               <span>転記日時</span><Icon name="arrow" size={18} />
               <strong>A列へ自動入力</strong>
             </div>
+            <div className="mapping-list__fixed">
+              <span>転記ルール</span><Icon name="arrow" size={18} />
+              <strong>B列へ「{ruleName || "ルール名"}」を自動入力</strong>
+            </div>
             {rules.map((rule) => (
               <div key={rule.id}>
                 <span>{rule.name}</span><Icon name="arrow" size={18} />
@@ -1133,8 +1150,8 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
             ))}
           </div>
         </div>
-        {live && sheetConnection.state === "connected" && !mappingsComplete ? <div className="mapping-auto-setup"><div><strong>列が足りない、または未割当の項目があります。</strong><span>既存の1行目を「転記日時＋取得項目」に整え、列を自動で割り当てます。</span></div><button type="button" onClick={autoConfigureSheet} disabled={Boolean(busy)}>{busy === "sheet" ? "設定中…" : "1行目と列を自動設定"}</button></div> : null}
-        <p className="mapping-timestamp-note">A列は「転記日時」専用です。シートのA1を「転記日時」にし、取得したい項目の見出しはB1以降へ入力してください。</p>
+        {live && sheetConnection.state === "connected" && !mappingsComplete ? <div className="mapping-auto-setup"><div><strong>列が足りない、または未割当の項目があります。</strong><span>既存の1行目を「転記日時＋転記ルール＋取得項目」に整え、列を自動で割り当てます。</span></div><button type="button" onClick={autoConfigureSheet} disabled={Boolean(busy)}>{busy === "sheet" ? "設定中…" : "1行目と列を自動設定"}</button></div> : null}
+        <p className="mapping-timestamp-note">A列は「転記日時」、B列は編集可能な「転記ルール名」専用です。取得項目はC列以降へ出力します。</p>
         {live ? <div className="sheet-actions"><button type="button" className="button button--blue" onClick={testWrite} disabled={Boolean(busy) || sheetConnection.state !== "connected"}>{busy === "write" ? "書き込み中…" : "この内容をテスト書き込み"}</button><button type="button" className="button button--outline" onClick={runRule} disabled={Boolean(busy) || !ruleId || sheetConnection.state !== "connected"}>{busy === "run" ? "転記中…" : "一致メールを手動で転記"}</button></div> : null}
       </section>
 
@@ -1164,7 +1181,7 @@ function HistoryTable({ rows }: { rows?: ApiHistoryRow[] }) {
       subject: row.subject,
       count: row.extractedCount,
       destination: row.destination || "—",
-      status: row.status === "success" ? "成功" : row.status === "review" ? "要確認" : "失敗",
+      status: row.status === "success" ? "成功" : row.status === "review" ? "要確認" : row.status === "failed" ? "失敗" : row.status === "received" ? "通知受信" : "転記なし",
       errorMessage: row.errorMessage,
     }));
   return (
@@ -1178,10 +1195,10 @@ function HistoryTable({ rows }: { rows?: ApiHistoryRow[] }) {
               <td data-label="対象メール">{row.subject}{row.errorMessage ? <small className="history-error">{row.errorMessage}</small> : null}</td>
               <td data-label="抽出件数">{row.count}件</td>
               <td data-label="出力先">{row.destination}</td>
-              <td data-label="状態"><span className={row.status === "成功" ? "history-status is-success" : row.status === "失敗" ? "history-status is-failed" : "history-status is-warning"}>{row.status}</span></td>
+              <td data-label="状態"><span className={row.status === "成功" ? "history-status is-success" : row.status === "失敗" ? "history-status is-failed" : row.status === "通知受信" ? "history-status is-info" : row.status === "転記なし" ? "history-status is-skipped" : "history-status is-warning"}>{row.status}</span></td>
             </tr>
           ))}
-          {data.length === 0 ? <tr><td colSpan={5} className="history-empty">まだ処理履歴はありません。テスト書き込みか「今すぐ同期」を実行すると、ここに表示されます。</td></tr> : null}
+          {data.length === 0 ? <tr><td colSpan={5} className="history-empty">まだ処理履歴はありません。Gmailの受信通知、テスト書き込み、手動転記の結果がここに表示されます。</td></tr> : null}
         </tbody>
       </table>
     </div>

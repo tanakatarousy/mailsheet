@@ -558,22 +558,22 @@ svg {
 .email-document__body p.is-target {
   border-radius: 3px;
   border-left: 2px solid #b9bfdd;
-  background: rgba(238, 241, 255, 0.42);
+  background: transparent;
 }
 
 .email-document__body p.target-1 {
   border-left-color: #e6a09a;
-  background: rgba(255, 240, 238, 0.38);
+  background: transparent;
 }
 
 .email-document__body p.target-2 {
   border-left-color: #8dbce8;
-  background: rgba(235, 246, 255, 0.38);
+  background: transparent;
 }
 
 .email-document__body p.target-3 {
   border-left-color: #80c59f;
-  background: rgba(235, 249, 241, 0.38);
+  background: transparent;
 }
 
 .email-document__body p span {
@@ -1241,6 +1241,13 @@ svg {
   background: var(--white);
 }
 
+.rule-name-note {
+  max-width: 150px;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
 .workbench-topbar__actions {
   display: flex;
   align-items: center;
@@ -1349,6 +1356,12 @@ svg {
 .saved-rules-manager__heading strong {
   color: var(--blue);
   font-size: 14px;
+}
+
+.saved-rules-manager__heading > div > small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
 }
 
 .saved-rules-manager__heading p {
@@ -1888,6 +1901,18 @@ svg {
   margin: -4px 0 9px;
   color: var(--muted);
   font-size: 10px;
+}
+
+.rule-list-empty {
+  margin: 0;
+  padding: 18px 16px;
+  border: 1px dashed #c8cde5;
+  border-radius: 8px;
+  background: #fafaff;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.7;
+  text-align: center;
 }
 
 .rule-list-item {
@@ -2490,6 +2515,16 @@ svg {
 .history-status.is-failed {
   background: #ffe8e8;
   color: #b32131;
+}
+
+.history-status.is-info {
+  background: #edf0ff;
+  color: var(--blue);
+}
+
+.history-status.is-skipped {
+  background: #eef0f2;
+  color: #5f6471;
 }
 
 .history-error {

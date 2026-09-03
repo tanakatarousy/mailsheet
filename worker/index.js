@@ -667,7 +667,7 @@ function senderMatches(fromHeader, sender) {
   return Boolean(requestedEmail && headerEmail && requestedEmail === headerEmail);
 }
 
-async function searchGmail(env, userId, sender, subject, limit) {
+async function searchGmail(env, userId, sender, subject, limit, includeRecentFallback = true) {
   const params = new URLSearchParams({ maxResults: String(Math.min(Math.max(limit || 8, 1), 20)) });
   const connection = await connectionRow(env, userId);
   const accountEmail = String(connection?.google_email || "").trim().toLowerCase();
@@ -677,6 +677,7 @@ async function searchGmail(env, userId, sender, subject, limit) {
   const data = await response.json();
   const exact = await Promise.all((data.messages || []).map((message) => getGmailMessage(env, userId, message.id)));
   if (exact.length || (!sender && !subject)) return { messages: exact, matchMode: "exact" };
+  if (!includeRecentFallback) return { messages: [], matchMode: "recent" };
 
   // Gmail's search grammar can miss self-sent mail, emoji and punctuation-heavy subjects.
   // Fall back to recent messages so the user can select the sample instead of editing search syntax.
@@ -775,7 +776,7 @@ async function handleSheetHeaders(request, env) {
     : [];
   if (!targetSheet) throw new HttpError(400, "Sheetを選択してください。", "sheet_required");
   if (!fieldNames.length) throw new HttpError(400, "取得項目を1つ以上追加してください。", "fields_required");
-  const headings = ["転記日時", ...fieldNames];
+  const headings = ["転記日時", "転記ルール", ...fieldNames];
   const endColumn = columnName(headings.length - 1);
   const range = encodeURIComponent(sheetRange(targetSheet, `A1:${endColumn}1`));
   await googleFetch(env, user.id, `${SHEETS_API}/${encodeURIComponent(id)}/values/${range}?valueInputOption=RAW`, {
@@ -846,13 +847,13 @@ async function handleSheetTest(request, env) {
   const user = await requireAuthorizedUser(request, env);
   const body = await readJson(request);
   const suppliedValues = Array.isArray(body.values) ? body.values.slice(0, 99) : [];
-  const values = [sheetTimestamp(), ...suppliedValues];
+  const values = [sheetTimestamp(), String(body.ruleName || "テスト書き込み").slice(0, 120), ...suppliedValues];
   const result = await appendSheetRow(env, user.id, body.spreadsheetId, String(body.sheetName || ""), values);
   await addHistory(requireDb(env), {
     userId: user.id,
     ruleId: Number(body.ruleId) || null,
     subject: String(body.subject || "テスト書き込み").slice(0, 300),
-    extractedCount: values.filter((value) => String(value ?? "").length > 0).length,
+    extractedCount: suppliedValues.filter((value) => String(value ?? "").length > 0).length,
     destination: String(body.destination || body.sheetName || "Google Sheets").slice(0, 300),
     status: "success",
   });
@@ -942,13 +943,31 @@ async function handleRuleSave(request, env) {
   if (body.active && (!body.spreadsheetId || !body.sheetName)) {
     throw new HttpError(400, "自動追加をONにするには、SpreadsheetとSheetを設定してください。", "sheet_not_configured");
   }
-  const hasMissingMapping = body.fields.some((field) => !String(body.mappings[String(field.id)] || "").trim());
+  const outputHeaders = new Set(body.sheetHeaders.slice(2).map((header) => String(header.label || "").trim()).filter(Boolean));
+  const hasMissingMapping = body.fields.some((field) => {
+    const mappedHeader = String(body.mappings[String(field.id)] || "").trim();
+    return !mappedHeader || !outputHeaders.has(mappedHeader);
+  });
   if (body.active && (!body.sheetHeaders.length || hasMissingMapping)) {
     throw new HttpError(400, "自動追加をONにするには、1行目の見出しを取得し、すべての取得項目に出力列を割り当ててください。", "mapping_incomplete");
   }
   const db = requireDb(env);
   const now = new Date().toISOString();
   let id = body.id;
+  if (!id) {
+    const savedCount = await db.prepare("SELECT COUNT(*) AS count FROM extraction_rules WHERE user_id = ?").bind(user.id).first();
+    if (Number(savedCount?.count || 0) >= 10) {
+      throw new HttpError(409, "転記ルールは10件まで登録できます。不要なルールを削除してから追加してください。", "rule_limit_reached");
+    }
+  }
+  if (body.active) {
+    const activeCount = id
+      ? await db.prepare("SELECT COUNT(*) AS count FROM extraction_rules WHERE user_id = ? AND active = 1 AND id <> ?").bind(user.id, id).first()
+      : await db.prepare("SELECT COUNT(*) AS count FROM extraction_rules WHERE user_id = ? AND active = 1").bind(user.id).first();
+    if (Number(activeCount?.count || 0) >= 3) {
+      throw new HttpError(409, "自動追加をONにできる転記ルールは3件までです。いずれかを停止してからONにしてください。", "active_rule_limit_reached");
+    }
+  }
   if (id) {
     const existing = await db.prepare("SELECT id FROM extraction_rules WHERE id = ? AND user_id = ?").bind(id, user.id).first();
     if (!existing) throw new HttpError(404, "保存対象のルールが見つかりません。", "rule_not_found");
@@ -1110,11 +1129,58 @@ async function handleRuleRun(request, env, ruleId) {
 async function processSavedRule(env, userId, rule) {
   const db = requireDb(env);
   if (!rule.spreadsheetId || !rule.sheetName) {
+    await addHistory(db, {
+      userId,
+      ruleId: rule.id,
+      subject: `ルール「${rule.name}」`,
+      destination: rule.sheetName || "Google Sheets未設定",
+      status: "failed",
+      errorMessage: "Spreadsheetまたはシート名が未設定のため実行できませんでした。",
+    });
     return { success: 0, review: 1, skipped: 0, searched: 0 };
   }
-  const sheet = await inspectSheet(env, userId, rule.spreadsheetId, rule.sheetName);
-  const searchResult = await searchGmail(env, userId, rule.sender, rule.subjectContains, 10);
+  let sheet;
+  try {
+    sheet = await inspectSheet(env, userId, rule.spreadsheetId, rule.sheetName);
+  } catch (error) {
+    await addHistory(db, {
+      userId,
+      ruleId: rule.id,
+      subject: `ルール「${rule.name}」`,
+      destination: rule.sheetName,
+      status: "failed",
+      errorMessage: `Google Sheetsを確認できませんでした：${error instanceof Error ? error.message : "不明なエラー"}`,
+    });
+    return { success: 0, review: 1, skipped: 0, searched: 0 };
+  }
+  let searchResult;
+  try {
+    // 自動処理では、画面表示用の「最近のメール」へフォールバックしない。
+    searchResult = await searchGmail(env, userId, rule.sender, rule.subjectContains, 10, false);
+  } catch (error) {
+    await addHistory(db, {
+      userId,
+      ruleId: rule.id,
+      subject: `ルール「${rule.name}」`,
+      destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+      status: "failed",
+      errorMessage: `Gmailを検索できませんでした：${error instanceof Error ? error.message : "不明なエラー"}`,
+    });
+    return { success: 0, review: 1, skipped: 0, searched: 0 };
+  }
   const messages = Array.isArray(searchResult?.messages) ? searchResult.messages : [];
+  if (!messages.length) {
+    const condition = rule.sender ? `差出人「${rule.sender}」` : rule.subjectContains ? `件名「${rule.subjectContains}」` : "指定条件";
+    await addHistory(db, {
+      userId,
+      ruleId: rule.id,
+      subject: `ルール「${rule.name}」を確認`,
+      destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+      status: "skipped",
+      errorMessage: `${condition}に完全一致する未処理メールが見つからなかったため、転記しませんでした。`,
+    });
+    return { success: 0, review: 0, skipped: 1, searched: 0 };
+  }
   let success = 0;
   let review = 0;
   let skipped = 0;
@@ -1136,11 +1202,11 @@ async function processSavedRule(env, userId, rule) {
       let status = "review";
       let errorMessage = missing.length ? `${missing.map((item) => item.field.name).join("、")}を抽出できませんでした` : "";
       if (!missing.length) {
-        const row = [sheetTimestamp(), ...sheet.headers.slice(1).map((header) => {
+        const row = [sheetTimestamp(), rule.name, ...sheet.headers.slice(2).map((header) => {
           const match = extracted.find((item) => rule.mappings[String(item.field.id)] === header.label);
           return match?.value || "";
         })];
-        if (!row.slice(1).some(Boolean)) {
+        if (!row.slice(2).some(Boolean)) {
           errorMessage = "見出しと抽出項目の紐付けを確認してください";
         } else {
           await appendSheetRow(env, userId, rule.spreadsheetId, rule.sheetName, row);
@@ -1164,8 +1230,27 @@ async function processSavedRule(env, userId, rule) {
         .prepare("DELETE FROM processed_messages WHERE user_id = ? AND rule_id = ? AND gmail_message_id = ?")
         .bind(userId, rule.id, message.id)
         .run();
-      throw error;
+      await addHistory(db, {
+        userId,
+        ruleId: rule.id,
+        receivedAt: message.receivedAt,
+        subject: message.subject,
+        destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+        status: "failed",
+        errorMessage: `転記処理に失敗しました：${error instanceof Error ? error.message : "不明なエラー"}`,
+      });
+      review += 1;
     }
+  }
+  if (skipped > 0 && success === 0 && review === 0) {
+    await addHistory(db, {
+      userId,
+      ruleId: rule.id,
+      subject: `ルール「${rule.name}」を確認`,
+      destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+      status: "skipped",
+      errorMessage: `一致した${skipped}件は処理済みのため、重複転記を防止しました。`,
+    });
   }
   return { success, review, skipped, searched: messages.length };
 }
@@ -1175,7 +1260,7 @@ async function activeRulesForUser(env, userId) {
     .prepare(
       `SELECT id, name, sender, subject_contains, fields_json, spreadsheet_id, spreadsheet_name,
               sheet_name, sheet_headers_json, mappings_json, active, created_at, updated_at
-       FROM extraction_rules WHERE user_id = ? AND active = 1 ORDER BY updated_at DESC LIMIT 100`,
+       FROM extraction_rules WHERE user_id = ? AND active = 1 ORDER BY updated_at DESC LIMIT 3`,
     )
     .bind(userId)
     .all();
@@ -1214,6 +1299,15 @@ async function handleGmailWebhook(request, env) {
   await requireDb(env).prepare("INSERT INTO system_events (user_id, event_type, detail, created_at) VALUES (?, 'gmail_push', ?, ?)")
     .bind(connection.user_id, email, notificationAt).run();
   const rules = await activeRulesForUser(env, connection.user_id);
+  await addHistory(requireDb(env), {
+    userId: connection.user_id,
+    ruleId: null,
+    receivedAt: notificationAt,
+    subject: "Gmail受信通知",
+    destination: "Gmail",
+    status: "received",
+    errorMessage: rules.length ? `自動追加ONの転記ルール ${rules.length}件を確認します。` : "自動追加ONの転記ルールがないため、転記処理は行いませんでした。",
+  });
   for (const rule of rules) await processSavedRule(env, connection.user_id, rule);
   if (Number(connection.gmail_watch_expires_at || 0) < Date.now() + 24 * 60 * 60 * 1000) {
     await registerGmailWatch(env, connection.user_id);
@@ -1291,8 +1385,9 @@ async function handleDashboard(request, env) {
   const rows = await historyRows(env, user.id, 500);
   const today = new Date().toISOString().slice(0, 10);
   const month = today.slice(0, 7);
-  const todays = rows.filter((row) => row.createdAt.startsWith(today));
-  const months = rows.filter((row) => row.createdAt.startsWith(month));
+  const terminalStatuses = new Set(["success", "review", "failed"]);
+  const todays = rows.filter((row) => row.createdAt.startsWith(today) && terminalStatuses.has(row.status));
+  const months = rows.filter((row) => row.createdAt.startsWith(month) && terminalStatuses.has(row.status));
   const count = (items, status) => items.filter((item) => item.status === status).length;
   return json({
     ok: true,

@@ -102,7 +102,7 @@ export type SavedRule = {
   active: boolean;
   createdAt: string;
   updatedAt: string;
-  lastStatus: "success" | "review" | "failed" | "";
+  lastStatus: "success" | "review" | "failed" | "received" | "skipped" | "";
   lastError: string;
   lastProcessedAt: string;
 };
@@ -114,7 +114,7 @@ export type HistoryRow = {
   subject: string;
   extractedCount: number;
   destination: string;
-  status: "success" | "review" | "failed";
+  status: "success" | "review" | "failed" | "received" | "skipped";
   errorMessage: string;
   createdAt: string;
 };

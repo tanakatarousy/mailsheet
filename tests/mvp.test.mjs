@@ -220,7 +220,7 @@ test("ships Gmail push webhook, watch registration and renewal routes", async ()
   assert.match(worker, /duplicate_rule/);
   assert.match(worker, /handleRuleDelete/);
   assert.match(worker, /function sheetTimestamp/);
-  assert.match(worker, /sheet\.headers\.slice\(1\)/);
+  assert.match(worker, /sheet\.headers\.slice\(2\)/);
   assert.match(worker, /ON CONFLICT\(user_id, rule_id, gmail_message_id\) DO NOTHING/);
   assert.match(worker, /reservation\.meta\?\.changes/);
   assert.match(worker, /mapping_incomplete/);
@@ -236,7 +236,7 @@ test("ships Gmail push webhook, watch registration and renewal routes", async ()
   assert.doesNotMatch(page, /正規表現を直接入力/);
   assert.doesNotMatch(page, /自動追加をONにして保存/);
   assert.match(page, /A列へ自動入力/);
-  assert.match(page, /A列は「転記日時」専用です/);
+  assert.match(page, /A列は「転記日時」、B列は編集可能な「転記ルール名」専用です/);
   assert.match(page, /設定不足/);
   assert.match(page, /このルールは実行されません/);
 });
@@ -291,8 +291,25 @@ test("saves current sheet mappings when enabling a rule and guides the next acti
   assert.match(page, /<option value="">出力列を選択<\/option>/);
   assert.match(page, /const writeSheetHeaders = async/);
   assert.match(worker, /\/api\/sheets\/headers/);
-  assert.match(worker, /const headings = \["転記日時", \.\.\.fieldNames\]/);
-  assert.match(worker, /body\.fields\.some\(\(field\) => !String\(body\.mappings\[String\(field\.id\)\]/);
+  assert.match(worker, /const headings = \["転記日時", "転記ルール", \.\.\.fieldNames\]/);
+  assert.match(worker, /const outputHeaders = new Set\(body\.sheetHeaders\.slice\(2\)/);
+});
+
+test("supports ten saved rules, three active rules, and traceable automatic processing", async () => {
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
+  assert.match(page, /const starterRules = embedded \? initialRules : \[\]/);
+  assert.doesNotMatch(page, /name: "取得項目1"/);
+  assert.match(page, /保存済みルール \{savedRules\.length\}\/10件/);
+  assert.match(page, /自動追加ON \{savedRules\.filter\(\(item\) => item\.active\)\.length\}\/3件/);
+  assert.match(page, /この名前をSpreadsheetのB列へ出力します/);
+  assert.match(worker, /rule_limit_reached/);
+  assert.match(worker, /active_rule_limit_reached/);
+  assert.match(worker, /ORDER BY updated_at DESC LIMIT 3/);
+  assert.match(worker, /searchGmail\(env, userId, rule\.sender, rule\.subjectContains, 10, false\)/);
+  assert.match(worker, /status: "received"/);
+  assert.match(worker, /status: "skipped"/);
+  assert.match(worker, /const row = \[sheetTimestamp\(\), rule\.name, \.\.\.sheet\.headers\.slice\(2\)/);
 });
 
 test("serves client routes without redirecting them to the landing page", async () => {
