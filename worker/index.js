@@ -638,12 +638,33 @@ function gmailQuery(sender, subject, accountEmail = "") {
   const cleanSender = String(sender || "").normalize("NFKC").trim().replace(/["\\]/g, "");
   const cleanSubject = String(subject || "").normalize("NFKC").trim().replace(/["\\]/g, "");
   const normalizeAddress = (value) => String(value || "").normalize("NFKC").toLowerCase().replace(/\s+/g, "").trim();
+  if (cleanSender || cleanSubject) chunks.push("in:anywhere");
   if (cleanSender) {
     const isOwnAddress = cleanSender.includes("@") && normalizeAddress(cleanSender) === normalizeAddress(accountEmail);
-    chunks.push(isOwnAddress ? "from:me" : cleanSender.includes("@") ? `from:${cleanSender}` : `"${cleanSender}"`);
+    chunks.push(isOwnAddress ? `{from:me from:${cleanSender}}` : cleanSender.includes("@") ? `from:${cleanSender}` : `"${cleanSender}"`);
   }
   if (cleanSubject) chunks.push(`subject:"${cleanSubject}"`);
   return chunks.join(" ");
+}
+
+function normalizeMailSearch(value) {
+  return decodeMimeHeader(String(value || ""))
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .replace(/[\s\u3000]+/g, "")
+    .replace(/[<>"'「」『』【】（）()]/g, "")
+    .trim();
+}
+
+function senderMatches(fromHeader, sender) {
+  const needle = normalizeMailSearch(sender);
+  if (!needle) return true;
+  const haystack = normalizeMailSearch(fromHeader);
+  if (haystack.includes(needle)) return true;
+  const requestedEmail = String(sender || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]?.toLowerCase();
+  const headerEmail = String(fromHeader || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]?.toLowerCase();
+  return Boolean(requestedEmail && headerEmail && requestedEmail === headerEmail);
 }
 
 async function searchGmail(env, userId, sender, subject, limit) {
@@ -657,42 +678,24 @@ async function searchGmail(env, userId, sender, subject, limit) {
   const exact = await Promise.all((data.messages || []).map((message) => getGmailMessage(env, userId, message.id)));
   if (exact.length || (!sender && !subject)) return { messages: exact, matchMode: "exact" };
 
-  // Gmail does not always index an encoded Japanese display name in `from:` searches.
-  // For a display-name query, also inspect the connected user's own sent messages.
-  if (sender && !String(sender).includes("@")) {
-    const selfParams = new URLSearchParams({ maxResults: "20", q: "from:me" });
-    const selfResponse = await googleFetch(env, userId, `${GMAIL_API}/messages?${selfParams}`);
-    const selfData = await selfResponse.json();
-    const selfMessages = await Promise.all((selfData.messages || []).map((message) => getGmailMessage(env, userId, message.id)));
-    const normalize = (value) => String(value || "").normalize("NFKC").toLowerCase().replace(/\s+/g, "").trim();
-    const senderNeedle = normalize(sender);
-    const subjectNeedle = normalize(subject);
-    const selfMatches = selfMessages.filter((message) => (
-      normalize(message.from).includes(senderNeedle)
-      && (!subjectNeedle || normalize(message.subject).includes(subjectNeedle) || subjectNeedle.includes(normalize(message.subject)))
-    ));
-    if (selfMatches.length) return { messages: selfMatches.slice(0, Math.min(Math.max(limit || 8, 1), 20)), matchMode: "close" };
-  }
-
   // Gmail's search grammar can miss self-sent mail, emoji and punctuation-heavy subjects.
   // Fall back to recent messages so the user can select the sample instead of editing search syntax.
   // Keep total Google API subrequests comfortably below the Workers request limit.
   // The list request is followed by one full-message request per result.
-  const recentParams = new URLSearchParams({ maxResults: "20" });
+  const recentParams = new URLSearchParams({ maxResults: "40", q: "in:anywhere" });
   const recentResponse = await googleFetch(env, userId, `${GMAIL_API}/messages?${recentParams}`);
   const recentData = await recentResponse.json();
   const recent = await Promise.all((recentData.messages || []).map((message) => getGmailMessage(env, userId, message.id)));
-  const normalize = (value) => String(value || "").normalize("NFKC").toLowerCase().replace(/\s+/g, "").trim();
-  const senderNeedle = normalize(sender);
-  const subjectNeedle = normalize(subject);
+  const subjectNeedle = normalizeMailSearch(subject);
   const closeMatches = recent.filter((message) => {
-    const senderMatch = !senderNeedle || normalize(message.from).includes(senderNeedle);
-    const subjectMatch = !subjectNeedle || normalize(message.subject).includes(subjectNeedle) || subjectNeedle.includes(normalize(message.subject));
+    const senderMatch = senderMatches(message.from, sender);
+    const normalizedSubject = normalizeMailSearch(message.subject);
+    const subjectMatch = !subjectNeedle || normalizedSubject.includes(subjectNeedle) || subjectNeedle.includes(normalizedSubject);
     return senderMatch && subjectMatch;
   });
   return {
     messages: (closeMatches.length ? closeMatches : recent).slice(0, Math.min(Math.max(limit || 8, 1), 20)),
-    matchMode: closeMatches.length ? "close" : "recent",
+    matchMode: closeMatches.length ? "exact" : "recent",
   };
 }
 

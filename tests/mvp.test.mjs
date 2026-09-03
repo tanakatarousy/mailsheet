@@ -243,13 +243,14 @@ test("ships Gmail push webhook, watch registration and renewal routes", async ()
 
 test("keeps Gmail fallback search within the Worker subrequest budget", async () => {
   const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
-  assert.match(worker, /recentParams = new URLSearchParams\(\{ maxResults: "20" \}\)/);
+  assert.match(worker, /recentParams = new URLSearchParams\(\{ maxResults: "40", q: "in:anywhere" \}\)/);
   assert.doesNotMatch(worker, /recentParams = new URLSearchParams\(\{ maxResults: "50" \}\)/);
   assert.match(worker, /google_reconnect_required/);
   assert.match(worker, /function decodeMimeHeader/);
   assert.match(worker, /cleanSender\.includes\("@"\)/);
-  assert.match(worker, /isOwnAddress \? "from:me"/);
-  assert.match(worker, /q: "from:me"/);
+  assert.match(worker, /\{from:me from:\$\{cleanSender\}\}/);
+  assert.match(worker, /function senderMatches/);
+  assert.match(worker, /matchMode: closeMatches\.length \? "exact" : "recent"/);
 });
 
 test("expires login after seven idle days and refreshes active sessions", async () => {
