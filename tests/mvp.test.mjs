@@ -159,11 +159,13 @@ function gmailTestMessage() {
 function installSheetsFetchMock({ failAppend = false, rejectAppendTimes = 0 } = {}) {
   const originalFetch = globalThis.fetch;
   let appendCalls = 0;
+  const appendedRows = [];
   let remainingAppendRejections = rejectAppendTimes;
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init = {}) => {
     const url = String(input);
     if (url.includes(":append")) {
       appendCalls += 1;
+      if (init.body) appendedRows.push(JSON.parse(String(init.body)).values?.[0] || []);
       if (failAppend) throw new TypeError("simulated uncertain network response");
       if (remainingAppendRejections > 0) {
         remainingAppendRejections -= 1;
@@ -193,6 +195,7 @@ function installSheetsFetchMock({ failAppend = false, rejectAppendTimes = 0 } = 
   };
   return {
     get appendCalls() { return appendCalls; },
+    get appendedRows() { return appendedRows; },
     restore() { globalThis.fetch = originalFetch; },
   };
 }
@@ -1090,10 +1093,10 @@ test("ships the complete LP and interactive app prototype", async () => {
     "BASE / STORES / Shopify",
     "本文中の値をドラッグして選択",
     "この文字を取得項目にする",
-    "項目を見分ける見出し",
-    "基準となるテキスト",
+    "開始位置",
+    "取得範囲",
     "自動プレビュー",
-    "入力するたびに",
+    "入力・範囲変更のたびに再判定",
     "候補が複数ある場合は、推測せず",
     "取得できる状態になるまで自動転記は開始しません",
   ]) {
@@ -1258,6 +1261,24 @@ test("accepts one test write and blocks the same Gmail delivery in later rule ru
   }
 });
 
+test("writes direct Gmail fields without a heading or regular expression", async () => {
+  const { processSavedRuleForTest } = await import(path.join(root, "worker", "index.js"));
+  const { env, sqlite } = await createWorkerTestEnvironment();
+  const sheets = installSheetsFetchMock();
+  const message = { ...gmailTestMessage(), id: "gmail_source_message_123", subject: "求人への応募がありました" };
+  const rule = safeJsonRule(41);
+  rule.fields = [{ id: 1, name: "メール件名", method: "source", sourceField: "subject", start: "", end: "", pattern: "", anchorConfirmed: true }];
+  rule.sender = "notice@example.com";
+  try {
+    const result = await processSavedRuleForTest(env, "test-user", rule, { messages: [message] });
+    assert.deepEqual(result, { success: 1, review: 0, skipped: 0, searched: 1 });
+    assert.equal(sheets.appendedRows[0][2], "求人への応募がありました");
+  } finally {
+    sheets.restore();
+    sqlite.close();
+  }
+});
+
 test("keeps delivery receipts when history storage fails after a successful append", async () => {
   const { processSavedRuleForTest } = await import(path.join(root, "worker", "index.js"));
   const { env, sqlite } = await createWorkerTestEnvironment({ failHistoryWrites: 1 });
@@ -1376,8 +1397,8 @@ test("ships Gmail push webhook, watch registration and renewal routes", async ()
   assert.match(worker, /二重転記を防ぐため自動再送していません/);
   assert.match(worker, /INSERT INTO extraction_rules[\s\S]*WHERE NOT EXISTS/);
   assert.match(worker, /unsafe_extraction_pattern/);
-  assert.match(worker, /body\.fields\.find\(\(field\) => field\.method !== "regex" \|\| !safeLocatorIsValid\(field\.locator\)\)/);
-  assert.match(worker, /rule\.fields\.find\(\(field\) => field\.method !== "regex" \|\| !safeLocatorIsValid\(field\.locator\)\)/);
+  assert.match(worker, /body\.fields\.find\(\(field\) => field\.method === "source"/);
+  assert.match(worker, /rule\.fields\.find\(\(field\) => field\.method === "source"/);
   assert.match(worker, /旧形式の取得条件です。本文から正しい値を選び直してください/);
   assert.doesNotMatch(worker, /\[\.\.\.sourceBody\.matchAll/);
   assert.doesNotMatch(worker, /new RegExp\s*\(\s*rule(?:\?\.)?\.pattern/);
@@ -1620,11 +1641,14 @@ test("shows the safe extraction decision and fails closed on changed mail struct
   assert.match(extractValueResult(birthdaySample, missingHeading).reason, /存在しない見出し/);
 
   assert.match(page, /取得項目名 <small>シートで使う名前<\/small>/);
-  assert.match(page, /値の種類 \/ 範囲の決め方 <small>抽出条件<\/small>/);
-  assert.match(page, /項目を見分ける見出し <small>基準となるテキスト<\/small>/);
+  assert.match(page, /値の種類 <small>形式チェック<\/small>/);
+  assert.match(page, /開始位置 <small>この見出しの直後<\/small>/);
+  assert.match(page, /取得範囲 <small>開始と終了<\/small>/);
   assert.doesNotMatch(page, /別のメール表記にも対応（任意）|追加で探す見出し|通常は空欄で問題ありません|複数ある場合は読点/);
   assert.match(page, /自動プレビュー/);
-  assert.match(page, /入力するたびに、現在表示中のメール本文で再判定/);
+  assert.match(page, /入力・範囲変更のたびに再判定/);
+  assert.match(page, /この範囲で取得できます/);
+  assert.match(page, /メール情報をそのまま取得/);
   assert.match(page, /role="status" aria-live="polite" aria-atomic="true"/);
   assert.match(page, /正常に取得できます/);
   assert.match(page, /この設定では取得できません/);
@@ -1836,7 +1860,7 @@ test("supports ten saved rules, three active rules, and traceable automatic proc
   assert.match(page, /新しいルールとして保存/);
   assert.match(page, /設定を残して別ルールにする/);
   assert.match(page, /追加して条件を編集/);
-  assert.match(page, /取得を終える位置/);
+  assert.match(page, /取得範囲 <small>開始と終了<\/small>/);
   assert.match(page, /setRuleId\(null\)[\s\S]*setPreviewRuleId\("draft"\)/);
   assert.match(page, /この名前をSpreadsheetのB列へ出力します/);
   assert.match(worker, /rule_limit_reached/);
