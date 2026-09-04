@@ -831,6 +831,25 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setNotice({ kind: "success", text: "新しい転記ルールを作成しました。メール本文から必要な値を選ぶか、「項目を追加」を押してください。" });
   };
 
+  const duplicateCurrentRule = () => {
+    if (!ruleId) return;
+    if (savedRules.length >= 10) {
+      setNotice({ kind: "warning", text: "転記ルールは10件まで登録できます。不要なルールを削除してから新規作成してください。" });
+      scrollToRef(savedRulesRef);
+      return;
+    }
+    editorRevisionRef.current += 1;
+    editorSessionRef.current += 1;
+    invalidateGmailRequest();
+    setRuleId(null);
+    setRuleName(`${ruleName || "転記ルール"} のコピー`);
+    setPreviewRuleId("draft");
+    setAutoAdd(false);
+    setTestStatus("idle");
+    setSaved(false);
+    setNotice({ kind: "success", text: "元のルールを残したまま、新しいルールとして編集中です。対象条件などを変更し、最後に「新しいルールとして保存」を押してください。" });
+  };
+
   const applyTemplate = (template: "recruit" | "inquiry" | "order" | "reservation" | "invoice") => {
     const templates = {
       recruit: {
@@ -1472,16 +1491,26 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           {live ? <><input className="rule-name-input" value={ruleName} onChange={(event) => { setRuleName(event.target.value); markChanged(); }} aria-label="転記ルール名" disabled={busy === "save"} /><small className="rule-name-note">この名前をSpreadsheetのB列へ出力します</small></> : <strong>{ruleName}</strong>}
         </div>
         <div className="workbench-topbar__actions">
-          {live ? <button type="button" className="button button--small button--outline" onClick={startNewRule} disabled={savedRules.length >= 10 || busy === "save"}><Icon name="plus" size={16} /> 新規作成</button> : null}
+          {live ? <button type="button" className="button button--small button--outline" onClick={startNewRule} disabled={savedRules.length >= 10 || busy === "save"}><Icon name="plus" size={16} /> 空のルールを新規作成</button> : null}
           <span className={autoAdd ? "switch-control is-on" : "switch-control"} title={live ? "ONで保存すると、これから届く条件一致メールを自動で転記します。" : undefined}>
             <span>新着メールを自動転記<small>{autoAdd ? "ON：受信後に自動で処理" : "OFF：手動操作のみ"}</small></span>
             <button type="button" onClick={() => { setAutoAdd((value) => !value); markChanged(); }} aria-label="新着メールの自動転記を切り替える" aria-pressed={autoAdd} disabled={busy === "save"}><i /></button>
           </span>
           <button type="button" className="button button--small button--outline" onClick={() => saveRule()} disabled={Boolean(busy)}>
-            {busy === "save" ? "保存中…" : saved ? "保存済み ✓" : ruleId ? "変更を保存" : "設定を保存"}
+            {busy === "save" ? "保存中…" : saved ? "保存済み ✓" : ruleId ? "このルールに上書き保存" : "新しいルールとして保存"}
           </button>
         </div>
       </div>
+
+      {live ? (
+        <div className={ruleId ? "editor-save-mode is-update" : "editor-save-mode is-create"} aria-live="polite">
+          <div>
+            <strong>{ruleId ? "保存済みルールを編集中" : "新しいルールを作成中"}</strong>
+            <span>{ruleId ? `保存すると「${ruleName || `RULE ${ruleId}`}」へ上書きします。保存済みルールの件数は増えません。` : "保存すると、保存済みルールの件数が1件増えます。"}</span>
+          </div>
+          {ruleId ? <button type="button" onClick={duplicateCurrentRule} disabled={savedRules.length >= 10 || Boolean(busy)}>設定を残して別ルールにする</button> : null}
+        </div>
+      ) : null}
 
       {live ? (
         <div className="live-mode-strip">
@@ -1503,6 +1532,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         <section ref={savedRulesRef} className="saved-rules-manager" aria-label="保存済みルール管理">
           <div className="saved-rules-manager__heading">
             <div><span>SAVED RULES</span><strong>保存済みルール {savedRules.length}/10件</strong><small>自動転記ON {savedRules.filter((item) => item.active && !savedRuleNeedsAnchorReview(item)).length}/3件</small></div>
+            <button type="button" className="button button--small button--outline" onClick={startNewRule} disabled={savedRules.length >= 10 || Boolean(busy)}><Icon name="plus" size={16} /> 別のルールを新規作成</button>
           </div>
           <div className="saved-rules-list">
             {savedRules.map((item) => {
@@ -1521,7 +1551,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                     <div className={`rule-diagnostic is-${health.tone}`}><strong>{health.message}</strong>{!item.sender && !item.subjectContains ? <span>対象条件が空欄のため、すべての受信メールが検索対象です。</span> : null}</div>
                   </div>
                   <div className="saved-rule-card__actions">
-                    <button type="button" onClick={() => void editSavedRule(item)} disabled={Boolean(busy)}>設定を編集</button>
+                    <button type="button" onClick={() => void editSavedRule(item)} disabled={Boolean(busy)}>設定を編集（上書き）</button>
                     {item.active && auth?.gmailPushConfigured && !auth.gmailWatchActive ? <button type="button" onClick={() => void activateGmailWatch()} disabled={Boolean(busy)}>監視開始</button> : null}
                     {anchorReview ? <button type="button" onClick={() => repairSavedRule(item)} disabled={Boolean(busy)}>取得位置を修正</button> : null}
                     {anchorReview && item.active ? <button type="button" onClick={() => void setStoredRuleActive(item, false)} disabled={Boolean(busy)}>自動転記を停止</button> : null}
@@ -1702,7 +1732,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           <div className="test-results" aria-live="polite">
             {results.map(({ rule, value }) => { const ready = Boolean(value) && (!live || !extractionFieldNeedsSafetyReview(rule)); return <div key={rule.id} className={ready ? "test-result is-success" : "test-result is-warning"}><span>{rule.name}</span><strong>{ready ? value : "抽出できませんでした"}</strong><i>{ready ? "✓" : "⚠"}</i></div>; })}
             <div className="test-action-row">
-              <button type="button" className="button button--outline" onClick={() => saveRule()} disabled={Boolean(busy)}>{busy === "save" ? "保存中…" : "ルールを保存"}</button>
+              <button type="button" className="button button--outline" onClick={() => saveRule()} disabled={Boolean(busy)}>{busy === "save" ? "保存中…" : ruleId ? "このルールに上書き保存" : "新しいルールとして保存"}</button>
               {!live ? <button type="button" className="button button--blue" onClick={() => setSaved(true)}>テスト結果を保存</button> : null}
             </div>
             {live ? <div className={auth?.gmailWatchActive && !autoAdd ? "automation-note is-warning" : "automation-note"}><p>{auth?.gmailWatchActive && autoAdd ? "受信通知と新着メールの自動転記は有効です。条件に一致する新着メールだけを転記します。" : auth?.gmailWatchActive ? "受信通知は有効です。自動転記する場合は、画面上部の「新着メールを自動転記」をONにしてルールを保存してください。" : auth?.gmailPushConfigured ? "自動転記を使う場合は、Google接続で受信通知を開始してください。" : "Google CloudでPub/Subを設定すると、新着メールを自動転記できます。"}</p>{auth?.gmailPushConfigured && !auth.gmailWatchActive ? <button type="button" onClick={activateGmailWatch} disabled={Boolean(busy)}>受信通知を開始</button> : null}</div> : null}
