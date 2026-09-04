@@ -1672,7 +1672,10 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         </div>
 
         <div className="rule-pane">
-          <div className="section-mini-heading"><span>03</span><div><small>EXTRACT RULES</small><h3 id="rules-title">取得項目を自由に指定</h3></div></div>
+          <div className="rule-pane__heading">
+            <div className="section-mini-heading"><span>03</span><div><small>EXTRACT RULES</small><h3 id="rules-title">取得項目を自由に指定</h3></div></div>
+            <button type="button" className="step-transition-button" onClick={() => scrollToRef(mappingSectionRef)}><span><small>NEXT 04</small><strong>出力先をつなぐ</strong></span><Icon name="arrow" size={20} /></button>
+          </div>
           <section ref={extractionRulesRef} className="rule-list" role="list" aria-label="抽出項目一覧">
             {!rules.length ? <p className="rule-list-empty">取得項目はまだありません。本文から値を選択するか、下の「項目を追加」を押してください。</p> : null}
             {rules.map((rule, index) => {
@@ -1714,7 +1717,6 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
               {selectedRule.method === "regex" ? <p className="automatic-rule-note">値が変わっても同じ見出しと境界から取得します。ただし、すべての別形式を自動判断できる保証はありません。見出し候補が複数ある場合は、推測せず「要確認」に止めます。</p> : null}
             </div>
           ) : null}
-          <button type="button" className="step-transition-button" onClick={() => scrollToRef(mappingSectionRef)}><span><small>NEXT 04</small><strong>出力先をつなぐ</strong></span><Icon name="arrow" size={20} /></button>
         </div>
       </section>
 
