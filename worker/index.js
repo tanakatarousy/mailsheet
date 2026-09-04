@@ -991,11 +991,8 @@ async function handleSheetTest(request, env) {
   const targetSpreadsheetId = spreadsheetId(body.spreadsheetId);
   const targetSheet = String(body.sheetName || "");
   if (!targetSheet.trim()) throw new HttpError(400, "Sheetを選択してください。", "sheet_required");
-  const gmailMessageId = normalizeGmailMessageId(body.gmailMessageId);
   const requestKey = sheetTestRequestKey(body.idempotencyKey);
-  const receiptKey = gmailMessageId
-    ? await sheetDeliveryKey(gmailMessageId, targetSpreadsheetId, targetSheet)
-    : requestKey;
+  const receiptKey = requestKey;
   // Resolve connection/refresh-token errors before claiming the at-most-once
   // receipt. Only an explicit Google rejection releases it after dispatch.
   await validAccessToken(env, user.id);
@@ -1005,7 +1002,7 @@ async function handleSheetTest(request, env) {
     return json({
       ok: true,
       skipped: true,
-      duplicateReason: gmailMessageId ? "gmail_message_already_accepted" : "request_already_accepted",
+      duplicateReason: "request_already_accepted",
       updatedRange: "",
       updatedRows: 0,
     });
