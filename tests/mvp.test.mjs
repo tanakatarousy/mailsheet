@@ -1594,6 +1594,19 @@ test("jumps directly between extraction rules and Google Sheets mapping", async 
   assert.match(styles, /\.step-back-button/);
 });
 
+test("keeps the Spreadsheet field as a URL and labels API-verified connections", async () => {
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  const worker = await readFile(path.join(root, "worker", "index.js"), "utf8");
+  assert.match(page, /const spreadsheetUrlFromId = \(spreadsheetId: string\) => spreadsheetId/);
+  assert.match(page, /setSpreadsheetInput\(spreadsheetUrlFromId\(info\.spreadsheetId\)\)/);
+  assert.match(page, /setSpreadsheetInput\(spreadsheetUrlFromId\(item\.spreadsheetId\)\)/);
+  assert.doesNotMatch(page, /setSpreadsheetInput\(info\.spreadsheetId\)/);
+  assert.match(page, /Google Sheets APIで接続確認済み/);
+  assert.match(worker, /const metadataResponse = await googleFetch/);
+  assert.match(worker, /const valuesResponse = await googleFetch/);
+  assert.match(worker, /if \(!response\.ok\) throw await googleError/);
+});
+
 test("shows the safe extraction decision and fails closed on changed mail structures", async () => {
   const {
     detectFields,
