@@ -493,6 +493,9 @@ function safeLocatorIsValid(locator: SafeExtractionLocator | undefined) {
     && locator.sampleContextLabels[0] === "@anchor"
     && locator.sampleContextLabels.slice(1).every((part) => typeof part === "string"
       && /^(?:b|p):[^\r\n]{1,100}$/.test(part));
+  const textSuffixIsSafe = locator.sampleValueType !== "text" || !locator.suffix
+    || Object.entries(DELIMITER_PAIRS).some(([open, { close }]) => locator.suffix!.startsWith(open)
+      && locator.suffix!.endsWith(close) && Boolean(delimiterShape(locator.suffix!)));
   const commonSignatureIsSafe = bracketCountIsSafe
     && plainLabelCountIsSafe
     && signatureIsSafe(locator.sampleBracketLabels)
@@ -509,9 +512,12 @@ function safeLocatorIsValid(locator: SafeExtractionLocator | undefined) {
       && textIsSafe(locator.suffix, false, 100)
       && commonSignatureIsSafe
       && contextLabelsAreSafe
+      && textSuffixIsSafe
       && (locator.balancedEnd === undefined || BALANCED_ENDS.has(locator.balancedEnd))
       && (!locator.includeLabel || locator.bracketed === true)
-      && !(locator.sampleValueType === "text" && (locator.lineEnd === true || Boolean(locator.suffix)))
+      // Free text ending at a bare line break is too easy to over-capture.
+      // A concrete suffix is safe because a missing or duplicated suffix fails closed.
+      && !(locator.sampleValueType === "text" && locator.lineEnd === true)
       && boundaries === 1;
   }
   if (locator.kind === "block") return textIsSafe(locator.heading, true) && textIsSafe(locator.endHeading, true) && commonSignatureIsSafe;
@@ -1299,7 +1305,7 @@ export function ruleFromSelection(body: string, selectedText: string, id: number
     expectedSelected = cleanedSelection.value;
     const normalizedSignature = signatureFor(expectedSelected);
     if (!normalizedSignature) return null;
-    if (normalizedSignature.sampleValueType === "text" && (locator.lineEnd === true || Boolean(locator.suffix))) return null;
+    if (normalizedSignature.sampleValueType === "text" && locator.lineEnd === true) return null;
     locator = {
       ...locator,
       ...normalizedSignature,
