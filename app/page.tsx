@@ -464,7 +464,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [ruleId, setRuleId] = useState<number | null>(null);
   const [ruleName, setRuleName] = useState(embedded ? "求人応募メール" : "新しい転記ルール");
   const [emailBody, setEmailBody] = useState(starterEmail);
-  const [emailMeta, setEmailMeta] = useState({ subject: "新しい応募", from: "notice@example.com" });
+  const [emailMeta, setEmailMeta] = useState({ messageId: "", subject: "新しい応募", from: "notice@example.com" });
   const [rules, setRules] = useState<ExtractionRule[]>(starterRules);
   const [selectedRuleId, setSelectedRuleId] = useState(starterRules[0]?.id ?? 0);
   const [sender, setSender] = useState("");
@@ -499,6 +499,10 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const mappingSectionRef = useRef<HTMLElement | null>(null);
   const testSectionRef = useRef<HTMLElement | null>(null);
   const watchRepairAttempted = useRef(false);
+  const saveInFlightRef = useRef(false);
+  const writeInFlightRef = useRef(false);
+  const runInFlightRef = useRef(false);
+  const testRequestRef = useRef({ signature: "", idempotencyKey: "" });
   const rulesRef = useRef(rules);
   useEffect(() => { rulesRef.current = rules; }, [rules]);
 
@@ -582,7 +586,6 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const visibleDetectedFields = useMemo(() => detectedFields.slice(0, 12), [detectedFields]);
   const allVisibleDetectedFieldsSelected = visibleDetectedFields.length > 0
     && selectedDetectedIndexes.length === visibleDetectedFields.length;
-  useEffect(() => { setSelectedDetectedIndexes([]); }, [emailBody]);
   const ruleHealth = (item: SavedRule) => {
     const missing: string[] = [];
     const unsafeField = item.fields.find(extractionFieldNeedsSafetyReview);
@@ -754,8 +757,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setSender("");
     setSubject(selected.subject);
     setConditionMode("subject");
-    setEmailMeta({ subject: selected.subject, from: "notice@example.com" });
+    setEmailMeta({ messageId: "", subject: selected.subject, from: "notice@example.com" });
     setEmailBody(selected.body);
+    setSelectedDetectedIndexes([]);
     setRules(safeFields);
     setSelectedRuleId(safeFields[0]?.id ?? 0);
     setMappings(Object.fromEntries(safeFields.map((field, index) => [field.id, outputColumnForRuleIndex(index)])));
@@ -912,7 +916,8 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
 
   const selectMessage = (message: GmailMessage) => {
     setEmailBody(message.body);
-    setEmailMeta({ subject: message.subject, from: message.from });
+    setEmailMeta({ messageId: message.id, subject: message.subject, from: message.from });
+    setSelectedDetectedIndexes([]);
     setTestStatus("idle");
     setNotice(null);
   };
@@ -1051,6 +1056,8 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       scrollToRef(extractionRulesRef);
       return;
     }
+    if (saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
     setBusy("save");
     setNotice(null);
     try {
@@ -1099,6 +1106,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     } catch (error) {
       setNotice({ kind: "warning", text: errorText(error) });
     } finally {
+      saveInFlightRef.current = false;
       setBusy("");
     }
   };
@@ -1108,6 +1116,8 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       await saveRule(true);
       return;
     }
+    if (saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
     setBusy("save");
     setNotice(null);
     try {
@@ -1125,12 +1135,15 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     } catch (error) {
       setNotice({ kind: "warning", text: errorText(error) });
     } finally {
+      saveInFlightRef.current = false;
       setBusy("");
     }
   };
 
   const deleteStoredRule = async (item: SavedRule) => {
     if (!window.confirm(`「${item.name}」を削除しますか？\nスプレッドシートへ転記済みの行は削除されません。`)) return;
+    if (saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
     setBusy("save");
     setNotice(null);
     try {
@@ -1146,6 +1159,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     } catch (error) {
       setNotice({ kind: "warning", text: errorText(error) });
     } finally {
+      saveInFlightRef.current = false;
       setBusy("");
     }
   };
@@ -1155,26 +1169,48 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       setNotice({ kind: "warning", text: "抽出できていない項目があります。先にルールを調整してください。" });
       return;
     }
+    if (writeInFlightRef.current || runInFlightRef.current) return;
+    writeInFlightRef.current = true;
     setBusy("write");
     setNotice(null);
     try {
       const values = sheetInfo?.headers.length
         ? sheetInfo.headers.slice(2).map((header) => results.find(({ rule }) => resolveMappedSheetColumn(sheetInfo.headers, mappings[rule.id]) === header.column)?.value || "")
         : results.map((item) => item.value);
-      const response = await postJson<{ ok: true; updatedRange: string }>("/api/sheets/test", {
+      const requestSignature = JSON.stringify({
+        gmailMessageId: emailMeta.messageId,
+        spreadsheetId: sheetInfo?.spreadsheetId || spreadsheetInput,
+        sheetName,
+        ruleName,
+        values,
+      });
+      if (testRequestRef.current.signature !== requestSignature) {
+        testRequestRef.current = { signature: requestSignature, idempotencyKey: crypto.randomUUID() };
+      }
+      const response = await postJson<{ ok: true; skipped: boolean; duplicateReason?: string; updatedRange: string }>("/api/sheets/test", {
         ruleId,
         spreadsheetId: sheetInfo?.spreadsheetId || spreadsheetInput,
         sheetName,
         ruleName,
         values,
+        gmailMessageId: emailMeta.messageId,
+        idempotencyKey: testRequestRef.current.idempotencyKey,
         subject: emailMeta.subject,
         destination: `${sheetInfo?.spreadsheetName || "Spreadsheet"} / ${sheetName}`,
       });
-      setNotice({ kind: "success", text: `テスト行を書き込みました${response.updatedRange ? `（${response.updatedRange}）` : ""}。` });
+      setNotice({
+        kind: "success",
+        text: response.skipped
+          ? emailMeta.messageId
+            ? "このメールは同じSheetへの書き込み受付済みです。重複行は追加しませんでした。Google Sheetsで結果を確認してください。"
+            : "同じテスト操作は受付済みです。重複行は追加しませんでした。Google Sheetsで結果を確認してください。"
+          : `テスト行を書き込みました${response.updatedRange ? `（${response.updatedRange}）` : ""}。`,
+      });
       onDataChanged?.();
     } catch (error) {
       setNotice({ kind: "warning", text: errorText(error) });
     } finally {
+      writeInFlightRef.current = false;
       setBusy("");
     }
   };
@@ -1184,6 +1220,8 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       setNotice({ kind: "warning", text: "先にルールを保存してください。" });
       return;
     }
+    if (runInFlightRef.current || writeInFlightRef.current) return;
+    runInFlightRef.current = true;
     setBusy("run");
     setNotice(null);
     try {
@@ -1196,6 +1234,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     } catch (error) {
       setNotice({ kind: "warning", text: errorText(error) });
     } finally {
+      runInFlightRef.current = false;
       setBusy("");
     }
   };
@@ -1355,7 +1394,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         {live && gmailMessages.length ? (
           <div ref={gmailResultsRef} className="gmail-sample-list" aria-label="一致したGmail">
             {gmailMessages.map((message) => (
-              <button key={message.id} type="button" onClick={() => { selectMessage(message); scrollToRef(mailPreviewRef); }} className={emailMeta.subject === message.subject && emailBody === message.body ? "is-selected" : undefined}>
+              <button key={message.id} type="button" onClick={() => { selectMessage(message); scrollToRef(mailPreviewRef); }} className={emailMeta.messageId === message.id ? "is-selected" : undefined}>
                 <strong>{message.subject}</strong><span>{message.from}</span><small>{message.snippet}</small>
               </button>
             ))}
@@ -1388,7 +1427,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           </div>
           <details className="email-edit-details">
             <summary>{live ? "サンプル本文を手動で調整" : "サンプルメールを編集"}</summary>
-            <textarea value={emailBody} onChange={(event) => { setEmailBody(event.target.value); setTestStatus("idle"); }} />
+            <textarea value={emailBody} onChange={(event) => { setEmailBody(event.target.value); setEmailMeta((current) => ({ ...current, messageId: "" })); setSelectedDetectedIndexes([]); setTestStatus("idle"); }} />
           </details>
           {live ? <p className="privacy-inline">この本文はプレビューとテストにだけ使用し、抽出ルール保存時には保存しません。</p> : null}
         </div>

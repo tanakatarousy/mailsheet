@@ -11,6 +11,9 @@ const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const METHODS = new Set(["after", "between", "number", "money", "date", "email", "phone", "regex"]);
 const SESSION_IDLE_SECONDS = 7 * 24 * 60 * 60;
 const SESSION_IDLE_MS = SESSION_IDLE_SECONDS * 1000;
+// Real extraction-rule IDs are positive AUTOINCREMENT values. Rule 0 is
+// reserved for sheet-delivery receipts shared by test, manual and push runs.
+const SHEET_DELIVERY_RECEIPT_RULE_ID = 0;
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -264,7 +267,7 @@ async function googleError(response, fallback) {
   } catch {
     // Google can return an empty or non-JSON error response.
   }
-  return new HttpError(response.status === 401 ? 401 : 502, message, "google_api_error");
+  return new HttpError(response.status === 401 ? 401 : 502, message, "google_api_error", { googleStatus: response.status });
 }
 
 async function connectionRow(env, userId, email = "") {
@@ -865,7 +868,13 @@ async function appendSheetRow(env, userId, inputId, sheetName, values) {
       body: JSON.stringify({ values: [values.map((value) => String(value ?? ""))] }),
     },
   );
-  return response.json();
+  // A successful append must stay successful even if Google returns an empty
+  // or otherwise unreadable response body. Retrying here could duplicate it.
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
 }
 
 function sheetTimestamp(date = new Date()) {
@@ -905,14 +914,135 @@ async function addHistory(db, values) {
     .run();
 }
 
+async function addHistorySafely(db, values) {
+  try {
+    await addHistory(db, values);
+  } catch (error) {
+    // Processing history is diagnostic. It must never turn an already-sent
+    // Sheets row into a retryable failure.
+    console.error("Processing history write failed", error);
+  }
+}
+
+function normalizeGmailMessageId(value, required = false) {
+  const messageId = String(value || "").trim();
+  if (!messageId && !required) return "";
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(messageId)) {
+    throw new HttpError(400, "Gmailメッセージを確認できません。メールを選び直してください。", "invalid_gmail_message_id");
+  }
+  return messageId;
+}
+
+function sheetTestRequestKey(value) {
+  const requestId = String(value || "").trim();
+  if (!/^[A-Za-z0-9_-]{16,100}$/.test(requestId)) {
+    throw new HttpError(400, "テスト書き込み操作を確認できません。画面を再読み込みしてください。", "invalid_idempotency_key");
+  }
+  return `sheet-test:v1:${requestId}`;
+}
+
+async function sheetDeliveryKey(gmailMessageId, inputId, sheetName) {
+  const messageId = normalizeGmailMessageId(gmailMessageId, true);
+  const id = spreadsheetId(inputId);
+  const targetSheet = String(sheetName || "");
+  if (!targetSheet.trim()) throw new HttpError(400, "Sheetを選択してください。", "sheet_required");
+  const digest = bytesToBase64Url(await sha256(JSON.stringify([messageId, id, targetSheet])));
+  return `sheet-delivery:v1:${digest}`;
+}
+
+async function reserveProcessedMessage(db, userId, ruleId, messageKey) {
+  const result = await db
+    .prepare(
+      `INSERT INTO processed_messages (user_id, rule_id, gmail_message_id, processed_at)
+       VALUES (?, ?, ?, ?) ON CONFLICT(user_id, rule_id, gmail_message_id) DO NOTHING`,
+    )
+    .bind(userId, ruleId, messageKey, new Date().toISOString())
+    .run();
+  return Number(result.meta?.changes || 0) > 0;
+}
+
+async function releaseProcessedMessage(db, userId, ruleId, messageKey) {
+  await db
+    .prepare("DELETE FROM processed_messages WHERE user_id = ? AND rule_id = ? AND gmail_message_id = ?")
+    .bind(userId, ruleId, messageKey)
+    .run();
+}
+
+function sheetAppendWasDefinitelyRejected(error) {
+  if (!(error instanceof HttpError)) return false;
+  if ([
+    "oauth_not_configured",
+    "google_not_connected",
+    "google_reconnect_required",
+    "invalid_spreadsheet_id",
+    "sheet_required",
+    "values_required",
+  ].includes(error.code)) return true;
+  const googleStatus = Number(error.details?.googleStatus || 0);
+  return error.code === "google_api_error" && googleStatus >= 400 && googleStatus < 500;
+}
+
 async function handleSheetTest(request, env) {
   assertSameOrigin(request);
   const user = await requireAuthorizedUser(request, env);
   const body = await readJson(request);
   const suppliedValues = Array.isArray(body.values) ? body.values.slice(0, 99) : [];
+  const targetSpreadsheetId = spreadsheetId(body.spreadsheetId);
+  const targetSheet = String(body.sheetName || "");
+  if (!targetSheet.trim()) throw new HttpError(400, "Sheetを選択してください。", "sheet_required");
+  const gmailMessageId = normalizeGmailMessageId(body.gmailMessageId);
+  const requestKey = sheetTestRequestKey(body.idempotencyKey);
+  const receiptKey = gmailMessageId
+    ? await sheetDeliveryKey(gmailMessageId, targetSpreadsheetId, targetSheet)
+    : requestKey;
+  // Resolve connection/refresh-token errors before claiming the at-most-once
+  // receipt. Only an explicit Google rejection releases it after dispatch.
+  await validAccessToken(env, user.id);
+  const db = requireDb(env);
+  const reserved = await reserveProcessedMessage(db, user.id, SHEET_DELIVERY_RECEIPT_RULE_ID, receiptKey);
+  if (!reserved) {
+    return json({
+      ok: true,
+      skipped: true,
+      duplicateReason: gmailMessageId ? "gmail_message_already_accepted" : "request_already_accepted",
+      updatedRange: "",
+      updatedRows: 0,
+    });
+  }
   const values = [sheetTimestamp(), String(body.ruleName || "テスト書き込み").slice(0, 120), ...suppliedValues];
-  const result = await appendSheetRow(env, user.id, body.spreadsheetId, String(body.sheetName || ""), values);
-  await addHistory(requireDb(env), {
+  let result;
+  try {
+    result = await appendSheetRow(env, user.id, targetSpreadsheetId, targetSheet, values);
+  } catch (error) {
+    if (sheetAppendWasDefinitelyRejected(error)) {
+      await releaseProcessedMessage(db, user.id, SHEET_DELIVERY_RECEIPT_RULE_ID, receiptKey);
+      await addHistorySafely(db, {
+        userId: user.id,
+        ruleId: Number(body.ruleId) || null,
+        subject: String(body.subject || "テスト書き込み").slice(0, 300),
+        extractedCount: suppliedValues.filter((value) => String(value ?? "").length > 0).length,
+        destination: String(body.destination || targetSheet || "Google Sheets").slice(0, 300),
+        status: "failed",
+        errorMessage: `Google Sheetsが書き込みを受け付けませんでした：${error.message}`,
+      });
+      throw error;
+    }
+    await addHistorySafely(db, {
+      userId: user.id,
+      ruleId: Number(body.ruleId) || null,
+      subject: String(body.subject || "テスト書き込み").slice(0, 300),
+      extractedCount: suppliedValues.filter((value) => String(value ?? "").length > 0).length,
+      destination: String(body.destination || targetSheet || "Google Sheets").slice(0, 300),
+      status: "review",
+      errorMessage: "Google Sheetsへの送信結果を確認できませんでした。二重転記を防ぐため自動再送していません。シートを確認してください。",
+    });
+    throw new HttpError(
+      502,
+      "書き込み結果を確認できませんでした。二重転記を防ぐため再送していません。Google Sheetsを確認してください。",
+      "sheet_write_uncertain",
+    );
+  }
+  await addHistorySafely(db, {
     userId: user.id,
     ruleId: Number(body.ruleId) || null,
     subject: String(body.subject || "テスト書き込み").slice(0, 300),
@@ -920,7 +1050,7 @@ async function handleSheetTest(request, env) {
     destination: String(body.destination || body.sheetName || "Google Sheets").slice(0, 300),
     status: "success",
   });
-  return json({ ok: true, updatedRange: result.updates?.updatedRange || "", updatedRows: result.updates?.updatedRows || 1 });
+  return json({ ok: true, skipped: false, updatedRange: result.updates?.updatedRange || "", updatedRows: result.updates?.updatedRows || 1 });
 }
 
 function normalizeSafeExtractionLocator(locator) {
@@ -1122,6 +1252,8 @@ async function handleRuleSave(request, env) {
     throw new HttpError(400, "新着メールの自動転記をONにするには、1行目の見出しを取得し、すべての取得項目に出力列を割り当ててください。", "mapping_incomplete");
   }
   const now = new Date().toISOString();
+  const fieldsJson = JSON.stringify(body.fields);
+  const mappingsJson = JSON.stringify(body.mappings);
   let id = body.id;
   if (!id) {
     const savedCount = await db.prepare("SELECT COUNT(*) AS count FROM extraction_rules WHERE user_id = ?").bind(user.id).first();
@@ -1140,70 +1272,85 @@ async function handleRuleSave(request, env) {
   if (id) {
     const existing = await db.prepare("SELECT id FROM extraction_rules WHERE id = ? AND user_id = ?").bind(id, user.id).first();
     if (!existing) throw new HttpError(404, "保存対象のルールが見つかりません。", "rule_not_found");
-    await db
+    const result = await db
       .prepare(
         `UPDATE extraction_rules SET
            name = ?, sender = ?, subject_contains = ?, fields_json = ?, spreadsheet_id = ?,
            spreadsheet_name = ?, sheet_name = ?, sheet_headers_json = ?, mappings_json = ?, active = ?, updated_at = ?
-         WHERE id = ? AND user_id = ?`,
+         WHERE id = ? AND user_id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM extraction_rules AS duplicate
+             WHERE duplicate.user_id = ? AND duplicate.id <> ? AND duplicate.sender = ?
+               AND duplicate.subject_contains = ? AND duplicate.fields_json = ?
+               AND duplicate.spreadsheet_id = ? AND duplicate.sheet_name = ? AND duplicate.mappings_json = ?
+           )`,
       )
       .bind(
         body.name,
         body.sender,
         body.subjectContains,
-        JSON.stringify(body.fields),
+        fieldsJson,
         body.spreadsheetId,
         body.spreadsheetName,
         body.sheetName,
         JSON.stringify(body.sheetHeaders),
-        JSON.stringify(body.mappings),
+        mappingsJson,
         body.active ? 1 : 0,
         now,
         id,
         user.id,
+        user.id,
+        id,
+        body.sender,
+        body.subjectContains,
+        fieldsJson,
+        body.spreadsheetId,
+        body.sheetName,
+        mappingsJson,
       )
       .run();
-  } else {
-    const candidates = await db
-      .prepare(
-        `SELECT id, sender, subject_contains, fields_json, spreadsheet_id, sheet_name, mappings_json
-         FROM extraction_rules WHERE user_id = ?`,
-      )
-      .bind(user.id)
-      .all();
-    const duplicate = (candidates.results || []).find((row) =>
-      row.sender === body.sender
-      && row.subject_contains === body.subjectContains
-      && row.fields_json === JSON.stringify(body.fields)
-      && row.spreadsheet_id === body.spreadsheetId
-      && row.sheet_name === body.sheetName
-      && row.mappings_json === JSON.stringify(body.mappings));
-    if (duplicate) {
+    if (!Number(result.meta?.changes || 0)) {
       throw new HttpError(409, "同じ条件・抽出項目・出力先のルールが既にあります。保存済みルールを開いて編集してください。", "duplicate_rule");
     }
+  } else {
     const result = await db
       .prepare(
         `INSERT INTO extraction_rules
          (user_id, name, sender, subject_contains, fields_json, spreadsheet_id, spreadsheet_name,
           sheet_name, sheet_headers_json, mappings_json, active, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+         WHERE NOT EXISTS (
+           SELECT 1 FROM extraction_rules
+           WHERE user_id = ? AND sender = ? AND subject_contains = ? AND fields_json = ?
+             AND spreadsheet_id = ? AND sheet_name = ? AND mappings_json = ?
+         )`,
       )
       .bind(
         user.id,
         body.name,
         body.sender,
         body.subjectContains,
-        JSON.stringify(body.fields),
+        fieldsJson,
         body.spreadsheetId,
         body.spreadsheetName,
         body.sheetName,
         JSON.stringify(body.sheetHeaders),
-        JSON.stringify(body.mappings),
+        mappingsJson,
         body.active ? 1 : 0,
         now,
         now,
+        user.id,
+        body.sender,
+        body.subjectContains,
+        fieldsJson,
+        body.spreadsheetId,
+        body.sheetName,
+        mappingsJson,
       )
       .run();
+    if (!Number(result.meta?.changes || 0)) {
+      throw new HttpError(409, "同じ条件・抽出項目・出力先のルールが既にあります。保存済みルールを開いて編集してください。", "duplicate_rule");
+    }
     id = result.meta?.last_row_id;
   }
   const saved = await db
@@ -2062,85 +2209,167 @@ async function processSavedRule(env, userId, rule, options = {}) {
   let review = 0;
   let skipped = 0;
   for (const message of [...messages].reverse()) {
-    const reservation = await db
-      .prepare(
-        `INSERT INTO processed_messages (user_id, rule_id, gmail_message_id, processed_at)
-         VALUES (?, ?, ?, ?) ON CONFLICT(user_id, rule_id, gmail_message_id) DO NOTHING`,
-      )
-      .bind(userId, rule.id, message.id, new Date().toISOString())
-      .run();
-    if (!Number(reservation.meta?.changes || 0)) {
+    let messageId;
+    try {
+      messageId = normalizeGmailMessageId(message.id, true);
+    } catch (error) {
+      await addHistorySafely(db, {
+        userId,
+        ruleId: rule.id,
+        receivedAt: message.receivedAt,
+        subject: message.subject,
+        destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+        status: "review",
+        errorMessage: error instanceof Error ? error.message : "Gmailメッセージを確認できませんでした。",
+      });
+      review += 1;
+      continue;
+    }
+    const ruleReserved = await reserveProcessedMessage(db, userId, rule.id, messageId);
+    if (!ruleReserved) {
       skipped += 1;
       continue;
     }
+    let extracted = [];
+    let row = null;
+    let errorMessage = "";
     try {
-      const extracted = rule.fields.map((field) => {
+      extracted = rule.fields.map((field) => {
         const result = extractValueResult(message.body, field, rule.fields);
         return { field, result, value: result.value };
       });
       const missing = extracted.filter((item) => item.result.status !== "ok");
-      let status = "review";
-      let errorMessage = missing.length
+      errorMessage = missing.length
         ? missing.map((item) => `${item.field.name}：${item.result.reason}`).join("／")
         : "";
       if (!missing.length) {
         const outputHeaders = sheet.headers.slice(2);
-        const row = [sheetTimestamp(), rule.name, ...outputHeaders.map((header) => {
+        row = [sheetTimestamp(), rule.name, ...outputHeaders.map((header) => {
           const match = extracted.find((item) => resolveMappedSheetColumn(outputHeaders, rule.mappings[String(item.field.id)]) === header.column);
           return match?.value || "";
         })];
         if (!row.slice(2).some(Boolean)) {
           errorMessage = "見出しと抽出項目の紐付けを確認してください";
-        } else {
-          await appendSheetRow(env, userId, rule.spreadsheetId, rule.sheetName, row);
-          status = "success";
+          row = null;
         }
       }
-      await addHistory(db, {
-        userId,
-        ruleId: rule.id,
-        receivedAt: message.receivedAt,
-        subject: message.subject,
-        extractedCount: extracted.filter((item) => item.value).length,
-        destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
-        status,
-        errorMessage,
-      });
-      // Only successful spreadsheet writes are final. A message that needs
-      // review must be retryable after the user repairs the extraction rule.
-      if (status !== "success") {
-        await db
-          .prepare("DELETE FROM processed_messages WHERE user_id = ? AND rule_id = ? AND gmail_message_id = ?")
-          .bind(userId, rule.id, message.id)
-          .run();
-      }
-      if (status === "success") success += 1;
-      else review += 1;
     } catch (error) {
-      await db
-        .prepare("DELETE FROM processed_messages WHERE user_id = ? AND rule_id = ? AND gmail_message_id = ?")
-        .bind(userId, rule.id, message.id)
-        .run();
-      await addHistory(db, {
+      await releaseProcessedMessage(db, userId, rule.id, messageId);
+      await addHistorySafely(db, {
         userId,
         ruleId: rule.id,
         receivedAt: message.receivedAt,
         subject: message.subject,
         destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
         status: "failed",
-        errorMessage: `転記処理に失敗しました：${error instanceof Error ? error.message : "不明なエラー"}`,
+        errorMessage: `転記内容を準備できませんでした：${error instanceof Error ? error.message : "不明なエラー"}`,
       });
       review += 1;
+      continue;
     }
+    if (!row) {
+      await addHistorySafely(db, {
+        userId,
+        ruleId: rule.id,
+        receivedAt: message.receivedAt,
+        subject: message.subject,
+        extractedCount: extracted.filter((item) => item.value).length,
+        destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+        status: "review",
+        errorMessage,
+      });
+      // Pre-append review failures stay retryable after the rule is repaired.
+      await releaseProcessedMessage(db, userId, rule.id, messageId);
+      review += 1;
+      continue;
+    }
+    let deliveryKey = "";
+    try {
+      deliveryKey = await sheetDeliveryKey(messageId, sheet.spreadsheetId, sheet.sheetName);
+      const deliveryReserved = await reserveProcessedMessage(
+        db,
+        userId,
+        SHEET_DELIVERY_RECEIPT_RULE_ID,
+        deliveryKey,
+      );
+      if (!deliveryReserved) {
+        // Another test or rule owns the destination receipt. Release this
+        // rule-local claim so it can recover if that owner is explicitly
+        // rejected by Google and releases the shared receipt.
+        await releaseProcessedMessage(db, userId, rule.id, messageId);
+        skipped += 1;
+        continue;
+      }
+    } catch (error) {
+      await releaseProcessedMessage(db, userId, rule.id, messageId);
+      await addHistorySafely(db, {
+        userId,
+        ruleId: rule.id,
+        receivedAt: message.receivedAt,
+        subject: message.subject,
+        destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+        status: "failed",
+        errorMessage: `重複転記の確認を準備できませんでした：${error instanceof Error ? error.message : "不明なエラー"}`,
+      });
+      review += 1;
+      continue;
+    }
+    try {
+      await appendSheetRow(env, userId, sheet.spreadsheetId, sheet.sheetName, row);
+    } catch (error) {
+      if (sheetAppendWasDefinitelyRejected(error)) {
+        // Google explicitly rejected the write, so no row was appended and a
+        // repaired configuration must be allowed to try again.
+        await releaseProcessedMessage(db, userId, SHEET_DELIVERY_RECEIPT_RULE_ID, deliveryKey);
+        await releaseProcessedMessage(db, userId, rule.id, messageId);
+        await addHistorySafely(db, {
+          userId,
+          ruleId: rule.id,
+          receivedAt: message.receivedAt,
+          subject: message.subject,
+          extractedCount: extracted.filter((item) => item.value).length,
+          destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+          status: "failed",
+          errorMessage: `Google Sheetsが書き込みを受け付けませんでした：${error.message}`,
+        });
+        review += 1;
+        continue;
+      }
+      // The request may already have reached Google. Keep both receipts so a
+      // webhook or manual retry cannot create a second row.
+      await addHistorySafely(db, {
+        userId,
+        ruleId: rule.id,
+        receivedAt: message.receivedAt,
+        subject: message.subject,
+        extractedCount: extracted.filter((item) => item.value).length,
+        destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+        status: "review",
+        errorMessage: "Google Sheetsへの送信結果を確認できませんでした。二重転記を防ぐため自動再送していません。シートを確認してください。",
+      });
+      review += 1;
+      continue;
+    }
+    success += 1;
+    await addHistorySafely(db, {
+      userId,
+      ruleId: rule.id,
+      receivedAt: message.receivedAt,
+      subject: message.subject,
+      extractedCount: extracted.filter((item) => item.value).length,
+      destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
+      status: "success",
+      errorMessage: "",
+    });
   }
   if (skipped > 0 && success === 0 && review === 0) {
-    await addHistory(db, {
+    await addHistorySafely(db, {
       userId,
       ruleId: rule.id,
       subject: `ルール「${rule.name}」を確認`,
       destination: `${sheet.spreadsheetName} / ${sheet.sheetName}`,
       status: "skipped",
-      errorMessage: `一致した${skipped}件は処理済みのため、重複転記を防止しました。`,
+      errorMessage: `一致した${skipped}件は書き込み受付済みのため、重複転記を防止しました。Google Sheetsで結果を確認してください。`,
     });
   }
   return { success, review, skipped, searched: messages.length };
@@ -2214,8 +2443,14 @@ async function handleGmailWebhook(request, env) {
   }
   if (nextHistoryId && newerHistoryId(nextHistoryId, String(connection.gmail_history_id || ""))) {
     await requireDb(env)
-      .prepare("UPDATE google_connections SET gmail_history_id = ?, updated_at = ? WHERE user_id = ?")
-      .bind(nextHistoryId, new Date().toISOString(), connection.user_id)
+      .prepare(
+        `UPDATE google_connections SET gmail_history_id = ?, updated_at = ?
+         WHERE user_id = ? AND (
+           COALESCE(gmail_history_id, '') = '' OR length(gmail_history_id) < length(?)
+           OR (length(gmail_history_id) = length(?) AND gmail_history_id < ?)
+         )`,
+      )
+      .bind(nextHistoryId, new Date().toISOString(), connection.user_id, nextHistoryId, nextHistoryId, nextHistoryId)
       .run();
   }
   if (Number(connection.gmail_watch_expires_at || 0) < Date.now() + 24 * 60 * 60 * 1000) {
@@ -2625,7 +2860,13 @@ async function serveApp(request, env) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-export { extractValue as extractWorkerValue, extractValueResult as extractWorkerValueResult };
+export {
+  extractValue as extractWorkerValue,
+  extractValueResult as extractWorkerValueResult,
+  processSavedRule as processSavedRuleForTest,
+  sheetDeliveryKey as sheetDeliveryReceiptKey,
+  sheetTestRequestKey,
+};
 
 export default {
   async fetch(request, env) {

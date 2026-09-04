@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -17,6 +18,184 @@ const vite = await createServer({
 after(async () => {
   await vite.close();
 });
+
+async function encryptedTestToken(value, secret) {
+  const secretDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
+  const key = await crypto.subtle.importKey("raw", secretDigest, { name: "AES-GCM" }, false, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
+  return `v1.${Buffer.from(iv).toString("base64url")}.${Buffer.from(cipher).toString("base64url")}`;
+}
+
+async function createWorkerTestEnvironment({ failHistoryWrites = 0 } = {}) {
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(`
+    CREATE TABLE app_users (email TEXT PRIMARY KEY, role TEXT NOT NULL, status TEXT NOT NULL);
+    CREATE TABLE google_connections (
+      user_id TEXT PRIMARY KEY, google_email TEXT NOT NULL, access_token_enc TEXT NOT NULL,
+      refresh_token_enc TEXT, expires_at INTEGER NOT NULL, scopes TEXT NOT NULL,
+      gmail_history_id TEXT, gmail_watch_expires_at INTEGER, last_gmail_notification_at TEXT,
+      last_watch_renewed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE processed_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, rule_id INTEGER NOT NULL,
+      gmail_message_id TEXT NOT NULL, processed_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX uidx_processed_messages_owner_rule_message
+      ON processed_messages (user_id, rule_id, gmail_message_id);
+    CREATE TABLE extraction_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, name TEXT NOT NULL,
+      sender TEXT NOT NULL, subject_contains TEXT NOT NULL, fields_json TEXT NOT NULL,
+      spreadsheet_id TEXT NOT NULL DEFAULT '', spreadsheet_name TEXT NOT NULL DEFAULT '',
+      sheet_name TEXT NOT NULL DEFAULT '', sheet_headers_json TEXT NOT NULL DEFAULT '[]',
+      mappings_json TEXT NOT NULL DEFAULT '{}', active INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE processing_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, rule_id INTEGER,
+      received_at TEXT NOT NULL, subject TEXT NOT NULL, extracted_count INTEGER NOT NULL DEFAULT 0,
+      destination TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, error_message TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+  `);
+  const tokenSecret = "test-secret-with-enough-entropy";
+  const now = new Date().toISOString();
+  sqlite.prepare("INSERT INTO app_users (email, role, status) VALUES (?, 'tester', 'active')")
+    .run("local-preview@example.com");
+  sqlite.prepare(
+    `INSERT INTO google_connections
+     (user_id, google_email, access_token_enc, refresh_token_enc, expires_at, scopes, created_at, updated_at)
+     VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`,
+  ).run(
+    "test-user",
+    "local-preview@example.com",
+    await encryptedTestToken("access-token", tokenSecret),
+    Date.now() + 60 * 60_000,
+    "gmail.readonly spreadsheets",
+    now,
+    now,
+  );
+  let remainingHistoryFailures = failHistoryWrites;
+  const DB = {
+    prepare(sql) {
+      const statement = sqlite.prepare(sql);
+      let bound = [];
+      const prepared = {
+        bind(...values) {
+          bound = values;
+          return prepared;
+        },
+        async first() {
+          return statement.get(...bound) || null;
+        },
+        async all() {
+          return { results: statement.all(...bound) };
+        },
+        async run() {
+          if (remainingHistoryFailures > 0 && /INSERT INTO processing_history/.test(sql)) {
+            remainingHistoryFailures -= 1;
+            throw new Error("simulated history failure");
+          }
+          const result = statement.run(...bound);
+          return { meta: { changes: Number(result.changes), last_row_id: Number(result.lastInsertRowid) } };
+        },
+      };
+      return prepared;
+    },
+  };
+  return {
+    sqlite,
+    env: {
+      DB,
+      GOOGLE_CLIENT_ID: "client-id",
+      GOOGLE_CLIENT_SECRET: "client-secret",
+      TOKEN_ENCRYPTION_KEY: tokenSecret,
+    },
+  };
+}
+
+function safeJsonRule(id = 1) {
+  return {
+    id,
+    name: `転記ルール${id}`,
+    sender: "notice@example.com",
+    subjectContains: "",
+    fields: [{
+      id: 1,
+      name: "氏名",
+      method: "regex",
+      start: "",
+      end: "",
+      pattern: "",
+      anchorConfirmed: true,
+      locator: { version: 2, kind: "json", path: ["氏名"], jsonType: "string" },
+    }],
+    spreadsheetId: "sheet_id_1234567890",
+    spreadsheetName: "採用管理",
+    sheetName: "応募一覧",
+    sheetHeaders: [
+      { column: "A", label: "転記日時" },
+      { column: "B", label: "転記ルール" },
+      { column: "C", label: "氏名" },
+    ],
+    mappings: { 1: "C" },
+    active: true,
+  };
+}
+
+function gmailTestMessage() {
+  return {
+    id: "gmail_message_123",
+    threadId: "thread_123",
+    from: "notice@example.com",
+    subject: "新しい応募",
+    date: "2026-09-04",
+    receivedAt: "2026-09-04T00:00:00.000Z",
+    snippet: "応募通知",
+    body: JSON.stringify({ 氏名: "池田 隼人" }),
+  };
+}
+
+function installSheetsFetchMock({ failAppend = false, rejectAppendTimes = 0 } = {}) {
+  const originalFetch = globalThis.fetch;
+  let appendCalls = 0;
+  let remainingAppendRejections = rejectAppendTimes;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes(":append")) {
+      appendCalls += 1;
+      if (failAppend) throw new TypeError("simulated uncertain network response");
+      if (remainingAppendRejections > 0) {
+        remainingAppendRejections -= 1;
+        return new Response(JSON.stringify({ error: { message: "invalid target range" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ updates: { updatedRange: "'応募一覧'!A2:C2", updatedRows: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("?fields=properties.title")) {
+      return new Response(JSON.stringify({
+        properties: { title: "採用管理" },
+        sheets: [{ properties: { sheetId: 0, title: "応募一覧", index: 0 } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.includes("/values/")) {
+      return new Response(JSON.stringify({ values: [["転記日時", "転記ルール", "氏名"]] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  return {
+    get appendCalls() { return appendCalls; },
+    restore() { globalThis.fetch = originalFetch; },
+  };
+}
 
 test("extracts values with the default natural-language rules", async () => {
   const { extractValue, initialRules, sampleEmail } = await vite.ssrLoadModule("/lib/extraction.ts");
@@ -964,6 +1143,182 @@ test("server API reports OAuth readiness without exposing secrets", async () => 
   assert.equal(JSON.stringify(payload).includes("CLIENT_SECRET"), false);
 });
 
+test("builds stable, destination-specific Sheets delivery receipts", async () => {
+  const { sheetDeliveryReceiptKey, sheetTestRequestKey } = await import(path.join(root, "worker", "index.js"));
+  const spreadsheetId = "sheet_id_1234567890";
+  const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+  const first = await sheetDeliveryReceiptKey("gmail_message_123", spreadsheetId, "応募一覧");
+  assert.equal(first, await sheetDeliveryReceiptKey("gmail_message_123", url, "応募一覧"));
+  assert.notEqual(first, await sheetDeliveryReceiptKey("gmail_message_123", spreadsheetId, "別Sheet"));
+  assert.notEqual(first, await sheetDeliveryReceiptKey("gmail_message_456", spreadsheetId, "応募一覧"));
+  assert.match(first, /^sheet-delivery:v1:[A-Za-z0-9_-]+$/);
+  assert.equal(sheetTestRequestKey("request_id_1234567890"), "sheet-test:v1:request_id_1234567890");
+  assert.throws(() => sheetTestRequestKey("short"), /テスト書き込み操作を確認できません/);
+});
+
+test("atomically rejects duplicate rule creates and updates", async () => {
+  const { default: worker } = await import(path.join(root, "worker", "index.js"));
+  const { env, sqlite } = await createWorkerTestEnvironment();
+  const base = safeJsonRule();
+  const ruleBody = (sender, id = null) => ({
+    id,
+    name: sender,
+    sender,
+    subjectContains: "",
+    fields: base.fields,
+    spreadsheetId: base.spreadsheetId,
+    spreadsheetName: base.spreadsheetName,
+    sheetName: base.sheetName,
+    sheetHeaders: base.sheetHeaders,
+    mappings: base.mappings,
+    active: false,
+  });
+  const request = (body) => new Request("http://localhost/api/rules", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-mailsheet-dev-user": "test-user" },
+    body: JSON.stringify(body),
+  });
+  try {
+    const duplicateCreates = await Promise.all([
+      worker.fetch(request(ruleBody("first@example.com")), env),
+      worker.fetch(request(ruleBody("first@example.com")), env),
+    ]);
+    assert.deepEqual(duplicateCreates.map((response) => response.status).sort(), [200, 409]);
+
+    const secondResponse = await worker.fetch(request(ruleBody("second@example.com")), env);
+    assert.equal(secondResponse.status, 200);
+    const second = await secondResponse.json();
+    const duplicateUpdate = await worker.fetch(request(ruleBody("first@example.com", second.rule.id)), env);
+    assert.equal(duplicateUpdate.status, 409);
+    assert.equal((await duplicateUpdate.json()).error.code, "duplicate_rule");
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM extraction_rules").get().count, 2);
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("accepts one test write and blocks the same Gmail delivery in later rule runs", async () => {
+  const { default: worker, processSavedRuleForTest } = await import(path.join(root, "worker", "index.js"));
+  const { env, sqlite } = await createWorkerTestEnvironment();
+  const sheets = installSheetsFetchMock();
+  const payload = {
+    ruleId: null,
+    spreadsheetId: "sheet_id_1234567890",
+    sheetName: "応募一覧",
+    ruleName: "新しい転記ルール",
+    values: ["池田 隼人"],
+    gmailMessageId: "gmail_message_123",
+    idempotencyKey: "request_id_1234567890",
+    subject: "新しい応募",
+    destination: "採用管理 / 応募一覧",
+  };
+  const request = (overrides = {}) => new Request("http://localhost/api/sheets/test", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-mailsheet-dev-user": "test-user" },
+    body: JSON.stringify({ ...payload, ...overrides }),
+  });
+  try {
+    const gmailResponses = await Promise.all([
+      worker.fetch(request(), env),
+      worker.fetch(request({ idempotencyKey: "request_id_abcdefghij" }), env),
+    ]);
+    const gmailResults = await Promise.all(gmailResponses.map((response) => response.json()));
+    assert.equal(gmailResults.filter((result) => result.skipped === false).length, 1);
+    assert.equal(gmailResults.filter((result) => result.skipped === true).length, 1);
+    assert.equal(gmailResults.find((result) => result.skipped)?.duplicateReason, "gmail_message_already_accepted");
+    assert.equal(sheets.appendCalls, 1);
+
+    const laterRun = await processSavedRuleForTest(env, "test-user", safeJsonRule(), { messages: [gmailTestMessage()] });
+    assert.deepEqual(laterRun, { success: 0, review: 0, skipped: 1, searched: 1 });
+    assert.equal(sheets.appendCalls, 1);
+
+    const sampleOnly = { gmailMessageId: "", idempotencyKey: "sample_request_123456", values: ["サンプル値"] };
+    const sampleResponses = await Promise.all([
+      worker.fetch(request(sampleOnly), env),
+      worker.fetch(request(sampleOnly), env),
+    ]);
+    const sampleResults = await Promise.all(sampleResponses.map((response) => response.json()));
+    assert.equal(sampleResults.filter((result) => result.skipped === false).length, 1);
+    assert.equal(sampleResults.filter((result) => result.skipped === true).length, 1);
+    assert.equal(sampleResults.find((result) => result.skipped)?.duplicateReason, "request_already_accepted");
+    assert.equal(sheets.appendCalls, 2);
+  } finally {
+    sheets.restore();
+    sqlite.close();
+  }
+});
+
+test("keeps delivery receipts when history storage fails after a successful append", async () => {
+  const { processSavedRuleForTest } = await import(path.join(root, "worker", "index.js"));
+  const { env, sqlite } = await createWorkerTestEnvironment({ failHistoryWrites: 1 });
+  const sheets = installSheetsFetchMock();
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    const first = await processSavedRuleForTest(env, "test-user", safeJsonRule(), { messages: [gmailTestMessage()] });
+    const repeated = await processSavedRuleForTest(env, "test-user", safeJsonRule(), { messages: [gmailTestMessage()] });
+    assert.deepEqual(first, { success: 1, review: 0, skipped: 0, searched: 1 });
+    assert.deepEqual(repeated, { success: 0, review: 0, skipped: 1, searched: 1 });
+    assert.equal(sheets.appendCalls, 1);
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM processed_messages").get().count, 2);
+  } finally {
+    console.error = originalConsoleError;
+    sheets.restore();
+    sqlite.close();
+  }
+});
+
+test("does not automatically retry an append with an uncertain Google response", async () => {
+  const { processSavedRuleForTest } = await import(path.join(root, "worker", "index.js"));
+  const { env, sqlite } = await createWorkerTestEnvironment();
+  const sheets = installSheetsFetchMock({ failAppend: true });
+  try {
+    const first = await processSavedRuleForTest(env, "test-user", safeJsonRule(), { messages: [gmailTestMessage()] });
+    const repeated = await processSavedRuleForTest(env, "test-user", safeJsonRule(), { messages: [gmailTestMessage()] });
+    assert.deepEqual(first, { success: 0, review: 1, skipped: 0, searched: 1 });
+    assert.deepEqual(repeated, { success: 0, review: 0, skipped: 1, searched: 1 });
+    assert.equal(sheets.appendCalls, 1);
+    assert.match(sqlite.prepare("SELECT error_message FROM processing_history ORDER BY id LIMIT 1").get().error_message, /自動再送していません/);
+  } finally {
+    sheets.restore();
+    sqlite.close();
+  }
+});
+
+test("releases receipts after Google explicitly rejects an append", async () => {
+  const { processSavedRuleForTest } = await import(path.join(root, "worker", "index.js"));
+  const { env, sqlite } = await createWorkerTestEnvironment();
+  const sheets = installSheetsFetchMock({ rejectAppendTimes: 1 });
+  try {
+    const rejected = await processSavedRuleForTest(env, "test-user", safeJsonRule(), { messages: [gmailTestMessage()] });
+    const repairedRetry = await processSavedRuleForTest(env, "test-user", safeJsonRule(), { messages: [gmailTestMessage()] });
+    assert.deepEqual(rejected, { success: 0, review: 1, skipped: 0, searched: 1 });
+    assert.deepEqual(repairedRetry, { success: 1, review: 0, skipped: 0, searched: 1 });
+    assert.equal(sheets.appendCalls, 2);
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM processed_messages").get().count, 2);
+  } finally {
+    sheets.restore();
+    sqlite.close();
+  }
+});
+
+test("blocks two different rules from writing the same Gmail message to the same tab", async () => {
+  const { processSavedRuleForTest } = await import(path.join(root, "worker", "index.js"));
+  const { env, sqlite } = await createWorkerTestEnvironment();
+  const sheets = installSheetsFetchMock();
+  try {
+    const first = await processSavedRuleForTest(env, "test-user", safeJsonRule(1), { messages: [gmailTestMessage()] });
+    const second = await processSavedRuleForTest(env, "test-user", safeJsonRule(2), { messages: [gmailTestMessage()] });
+    assert.equal(first.success, 1);
+    assert.equal(second.skipped, 1);
+    assert.equal(sheets.appendCalls, 1);
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM processed_messages WHERE rule_id = 2").get().count, 0);
+  } finally {
+    sheets.restore();
+    sqlite.close();
+  }
+});
+
 test("ships inspected D1 migrations for connections, rules and history", async () => {
   const migration = await readFile(path.join(root, "drizzle", "0000_kind_whizzer.sql"), "utf8");
   const headerMigration = await readFile(path.join(root, "drizzle", "0001_condemned_wild_child.sql"), "utf8");
@@ -989,6 +1344,7 @@ test("ships Gmail push webhook, watch registration and renewal routes", async ()
   assert.match(worker, /GMAIL_API}\/history/);
   assert.match(worker, /historyTypes: "messageAdded"/);
   assert.match(worker, /gmailMessagesAddedSince/);
+  assert.match(worker, /length\(gmail_history_id\) < length\(\?\)/);
   assert.match(worker, /messageMatchesRule/);
   assert.match(worker, /processSavedRule\(env, connection\.user_id, rule, \{ messages: addedMessages \}\)/);
   assert.match(worker, /今回追加されたメール/);
@@ -999,10 +1355,16 @@ test("ships Gmail push webhook, watch registration and renewal routes", async ()
   assert.match(worker, /function sheetTimestamp/);
   assert.match(worker, /sheet\.headers\.slice\(2\)/);
   assert.match(worker, /ON CONFLICT\(user_id, rule_id, gmail_message_id\) DO NOTHING/);
-  assert.match(worker, /reservation\.meta\?\.changes/);
+  assert.match(worker, /result\.meta\?\.changes/);
   assert.match(worker, /mapping_incomplete/);
   assert.match(worker, /item\.result\.reason/);
-  assert.match(worker, /Only successful spreadsheet writes are final/);
+  assert.match(worker, /SHEET_DELIVERY_RECEIPT_RULE_ID/);
+  assert.match(worker, /sheetDeliveryKey/);
+  assert.match(worker, /sheet-test:v1:/);
+  assert.match(worker, /sheet-delivery:v1:/);
+  assert.match(worker, /addHistorySafely/);
+  assert.match(worker, /二重転記を防ぐため自動再送していません/);
+  assert.match(worker, /INSERT INTO extraction_rules[\s\S]*WHERE NOT EXISTS/);
   assert.match(worker, /unsafe_extraction_pattern/);
   assert.match(worker, /body\.fields\.find\(\(field\) => field\.method !== "regex" \|\| !safeLocatorIsValid\(field\.locator\)\)/);
   assert.match(worker, /rule\.fields\.find\(\(field\) => field\.method !== "regex" \|\| !safeLocatorIsValid\(field\.locator\)\)/);
@@ -1022,6 +1384,12 @@ test("ships Gmail push webhook, watch registration and renewal routes", async ()
   assert.match(page, /差出人（From）で探す/);
   assert.match(page, /件名で探す/);
   assert.match(page, /一致メールを手動で転記/);
+  assert.match(page, /writeInFlightRef/);
+  assert.match(page, /runInFlightRef/);
+  assert.match(page, /saveInFlightRef/);
+  assert.match(page, /gmailMessageId: emailMeta\.messageId/);
+  assert.match(page, /idempotencyKey: testRequestRef\.current\.idempotencyKey/);
+  assert.match(page, /重複行は追加しませんでした/);
   assert.match(page, /入力が終わると自動確認します/);
   assert.doesNotMatch(page, /正規表現を直接入力/);
   assert.doesNotMatch(page, /自動追加をONにして保存/);
@@ -1235,7 +1603,7 @@ test("supports ten saved rules, three active rules, and traceable automatic proc
   assert.match(worker, /handleAdminPendingInvite/);
   assert.match(worker, /\/api\/admin\/invite\/manage/);
   assert.match(page, />監視開始<\/button>/);
-  assert.match(worker, /const row = \[sheetTimestamp\(\), rule\.name, \.\.\.outputHeaders\.map/);
+  assert.match(worker, /row = \[sheetTimestamp\(\), rule\.name, \.\.\.outputHeaders\.map/);
 });
 
 test("serves client routes without redirecting them to the landing page", async () => {
