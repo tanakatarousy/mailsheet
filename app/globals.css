@@ -2232,10 +2232,13 @@ svg {
 }
 
 .source-field-add { display: grid; gap: 8px; margin-top: 10px; padding: 12px; border: 1px solid rgba(11, 29, 145, 0.16); border-radius: 8px; background: #f7f8ff; }
-.source-field-add > span { color: var(--black); font-size: 11px; font-weight: 750; }
+.source-field-add > span { color: var(--black); font-size: 13px; font-weight: 750; }
+.source-field-add > span small { margin-left: 6px; color: var(--muted); font-size: 11px; font-weight: 500; }
 .source-field-add > div { display: flex; flex-wrap: wrap; gap: 7px; }
 .source-field-add button { min-height: 34px; padding: 0 10px; border: 1px solid rgba(11, 29, 145, 0.22); border-radius: 999px; background: #fff; color: var(--blue); font-size: 10px; font-weight: 750; }
 .rule-source-field { grid-column: 1 / -1; }
+.rule-condition-summary { grid-column: 1 / -1; }
+.rule-condition-summary > button { width: fit-content; min-height: 36px; padding: 0 12px; border: 1px solid var(--blue); border-radius: 999px; background: #fff; color: var(--blue); font-size: 12px; font-weight: 750; }
 .rule-boundary-field dl,
 .selection-builder__preview dl { display: grid; gap: 6px; margin: 2px 0; }
 .rule-boundary-field dl > div,
