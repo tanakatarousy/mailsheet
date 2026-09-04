@@ -1899,12 +1899,12 @@ test("supports ten saved rules, three active rules, and traceable automatic proc
   assert.match(worker, /status: "received"/);
   assert.match(worker, /status: "skipped"/);
   assert.match(worker, /gmail_watch_failed/);
-  assert.match(worker, /Gmail受信監視を開始できませんでした/);
+  assert.match(worker, /自動転記を開始できませんでした/);
   assert.match(worker, /lastGmailNotificationAt/);
   assert.doesNotMatch(worker, /labelFilterBehavior: "INCLUDE"/);
   assert.match(page, /watchRepairAttempted/);
-  assert.match(page, /受信監視停止/);
-  assert.match(page, /Cloudflareへ最初の受信通知が届くのを待っています/);
+  assert.match(page, /自動転記停止中/);
+  assert.match(page, /設定は完了しています。条件に一致する新着メールを待っています/);
   assert.match(page, /受信通知の設定が未完了です/);
   assert.match(page, /確認が終わるまで誤転記を防ぐため処理を停止します/);
   assert.match(page, /招待・登録ユーザー一覧/);
