@@ -277,7 +277,7 @@ test("does not invent reusable fields from unsupported or position-only layouts"
 });
 
 test("turns selected sample text into a reusable extraction rule", async () => {
-  const { ruleFromSelection, extractValue } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const { ruleFromSelection, extractValue, extractValueResult } = await vite.ssrLoadModule("/lib/extraction.ts");
   const inline = ruleFromSelection("氏名：山田 太郎\n電話：090-1111-2222", "山田 太郎", 8);
   assert.ok(inline);
   assert.equal(inline.suggestedName, "氏名");
@@ -316,6 +316,14 @@ test("turns selected sample text into a reusable extraction rule", async () => {
   const embedded = ruleFromSelection(embeddedBracket, "池田 隼人", 13, "", embeddedStart);
   assert.ok(embedded);
   assert.equal(extractValue("案内文が変わりました。 【氏名】 佐藤 花子【電話番号】080-2222-3333", embedded.rule), "佐藤 花子");
+
+  const statusBody = "【現在の状況】 在職中（退職準備中）【直近の勤め先】株式会社サンプル";
+  const status = ruleFromSelection(statusBody, "在職中", 14, "", statusBody.indexOf("在職中"));
+  assert.ok(status);
+  assert.equal(status.rule.locator?.kind, "label");
+  assert.equal(status.rule.locator?.suffix, "（退職準備中）");
+  assert.equal(extractValue(statusBody, status.rule), "在職中");
+  assert.equal(extractValueResult("【現在の状況】 在職中【直近の勤め先】株式会社サンプル", status.rule).status, "missing");
 });
 
 test("extracts only a uniquely labelled nearby value across harmless mail variations", async () => {
@@ -1546,7 +1554,7 @@ test("selects detected fields in a batch and assigns output columns from C", asy
   assert.match(page, /setSelectedDetectedIndexes\(\[]\)/);
   assert.match(page, /const outputColumnForRuleIndex = \(ruleIndex: number\) => spreadsheetColumnAt\(ruleIndex \+ 2\)/);
   assert.match(page, /nextMappings\[nextId\] = sheetInfo\?\.headers\[ruleIndex \+ 2\]\?\.column \?\? outputColumnForRuleIndex\(ruleIndex\)/);
-  assert.match(page, /C列以降へ順番に割り当てました/);
+  assert.match(page, /下の条件欄で、見出し・値の種類・取得の終了位置を確認できます/);
   assert.match(styles, /\.detected-fields__list button\.is-selected/);
   assert.match(styles, /\.detected-fields__selection-bar/);
 });
@@ -1827,6 +1835,8 @@ test("supports ten saved rules, three active rules, and traceable automatic proc
   assert.match(page, /このルールに上書き保存/);
   assert.match(page, /新しいルールとして保存/);
   assert.match(page, /設定を残して別ルールにする/);
+  assert.match(page, /追加して条件を編集/);
+  assert.match(page, /取得を終える位置/);
   assert.match(page, /setRuleId\(null\)[\s\S]*setPreviewRuleId\("draft"\)/);
   assert.match(page, /この名前をSpreadsheetのB列へ出力します/);
   assert.match(worker, /rule_limit_reached/);
