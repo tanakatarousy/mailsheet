@@ -1262,6 +1262,52 @@ svg {
   white-space: nowrap;
 }
 
+.editor-save-mode {
+  display: flex;
+  min-height: 58px;
+  padding: 10px 24px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid var(--soft-line);
+}
+
+.editor-save-mode.is-update {
+  background: #fff8df;
+  color: #714b00;
+}
+
+.editor-save-mode.is-create {
+  background: #eefaf4;
+  color: #17663d;
+}
+
+.editor-save-mode > div {
+  display: grid;
+  gap: 3px;
+}
+
+.editor-save-mode strong {
+  font-size: 12px;
+}
+
+.editor-save-mode span {
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.editor-save-mode button {
+  min-height: 36px;
+  padding: 0 14px;
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: #fff;
+  color: inherit;
+  font-size: 10px;
+  font-weight: 800;
+}
+
 .live-mode-strip,
 .workbench-notice {
   display: flex;
@@ -5137,6 +5183,16 @@ svg {
   .live-mode-strip {
     align-items: flex-start;
     flex-wrap: wrap;
+  }
+
+  .editor-save-mode {
+    padding: 12px 14px;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .editor-save-mode button {
+    width: 100%;
   }
 
   .live-mode-strip a {
