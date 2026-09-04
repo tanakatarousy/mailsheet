@@ -1714,11 +1714,12 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
               {selectedRule.method === "regex" ? <p className="automatic-rule-note">値が変わっても同じ見出しと境界から取得します。ただし、すべての別形式を自動判断できる保証はありません。見出し候補が複数ある場合は、推測せず「要確認」に止めます。</p> : null}
             </div>
           ) : null}
+          <button type="button" className="step-transition-button" onClick={() => scrollToRef(mappingSectionRef)}><span><small>NEXT 04</small><strong>出力先をつなぐ</strong></span><Icon name="arrow" size={20} /></button>
         </div>
       </section>
 
       <section ref={mappingSectionRef} className="mapping-section" aria-labelledby="mapping-title">
-        <div className="section-mini-heading"><span>04</span><div><small>GOOGLE SHEETS</small><h3 id="mapping-title">出力先をつなぐ</h3></div></div>
+        <div className="mapping-section__heading"><div className="section-mini-heading"><span>04</span><div><small>GOOGLE SHEETS</small><h3 id="mapping-title">出力先をつなぐ</h3></div></div><button type="button" className="step-back-button" onClick={() => scrollToRef(extractionRulesRef)}><Icon name="up" size={16} /> 取得項目へ戻る</button></div>
         <div className="mapping-layout">
           <div className="sheet-selector">
             {live ? (
