@@ -85,7 +85,7 @@ const editableMethodLabels: Record<EditableExtractionMethod, string> = {
 const editableMethodsForRule = (rule: ExtractionRule) => {
   if (rule.locator?.kind === "json") return editableExtractionMethods.filter((method) => ["after", "number", "boolean"].includes(method));
   const genericTextWouldLoseSafety = rule.locator?.kind === "label"
-    && (rule.locator.lineEnd === true || Boolean(rule.locator.suffix));
+    && rule.locator.lineEnd === true;
   return editableExtractionMethods.filter((method) => method !== "boolean" && (method !== "after" || !genericTextWouldLoseSafety));
 };
 const editableMethodLabel = (rule: ExtractionRule, method: EditableExtractionMethod) => {
@@ -519,6 +519,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const mailPreviewRef = useRef<HTMLDivElement | null>(null);
   const selectionBuilderRef = useRef<HTMLDivElement | null>(null);
   const extractionRulesRef = useRef<HTMLElement | null>(null);
+  const ruleFormRef = useRef<HTMLDivElement | null>(null);
   const mailConditionRef = useRef<HTMLElement | null>(null);
   const mappingSectionRef = useRef<HTMLElement | null>(null);
   const testSectionRef = useRef<HTMLElement | null>(null);
@@ -970,8 +971,8 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setSelectedRuleId(lastRuleId);
     setSelectedDetectedIndexes([]);
     markChanged();
-    setNotice({ kind: "success", text: `${items.length}項目を追加し、C列以降へ順番に割り当てました。` });
-    scrollToRef(extractionRulesRef);
+    setNotice({ kind: "success", text: `${items.length}項目を追加しました。下の条件欄で、見出し・値の種類・取得の終了位置を確認できます。` });
+    window.setTimeout(() => scrollToRef(ruleFormRef, 120), 0);
   };
 
   const addSelectedDetectedFields = () => {
@@ -1016,9 +1017,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setSelectedTextStart(null);
     setSelectionName("");
     markChanged();
-    setNotice({ kind: "success", text: `「${generated.rule.name}」を追加しました。取得条件は自動設定済みです。保存するとルールに反映されます。` });
+    setNotice({ kind: "success", text: `「${generated.rule.name}」を追加しました。下の条件欄で、見出し・値の種類・取得の終了位置を確認してください。` });
     window.getSelection()?.removeAllRanges();
-    scrollToRef(extractionRulesRef);
+    window.setTimeout(() => scrollToRef(ruleFormRef, 120), 0);
   };
 
   const replaceSelectedTextRule = () => {
@@ -1039,9 +1040,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setSelectedTextStart(null);
     setSelectionName("");
     markChanged();
-    setNotice({ kind: "success", text: `「${generated.rule.name}」の取得位置を、選択した文字から安全に設定し直しました。` });
+    setNotice({ kind: "success", text: `「${generated.rule.name}」の取得位置を設定し直しました。下の条件欄で終了位置とプレビューを確認してください。` });
     window.getSelection()?.removeAllRanges();
-    scrollToRef(extractionRulesRef);
+    window.setTimeout(() => scrollToRef(ruleFormRef, 120), 0);
   };
 
   const removeRule = (id: number) => {
@@ -1635,7 +1636,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           ) : null}
           <div className="detected-fields">
             <div className="detected-fields__heading"><div><strong>本文から見つかった項目</strong><small>必要な項目を2件以上でも選べます</small></div><div className="detected-fields__actions"><button type="button" className="is-secondary" onClick={toggleAllDetectedFields} disabled={!visibleDetectedFields.length}>{allVisibleDetectedFieldsSelected ? "選択解除" : "すべて選択"}</button></div></div>
-            {visibleDetectedFields.length ? <div className="detected-fields__selection-bar"><span>{selectedDetectedIndexes.length ? `${selectedDetectedIndexes.length}件選択中` : "追加する項目をタップしてください"}</span><button type="button" onClick={addSelectedDetectedFields} disabled={!selectedDetectedIndexes.length}>{selectedDetectedIndexes.length ? `選択した${selectedDetectedIndexes.length}件を追加` : "項目を選択してください"}</button></div> : null}
+            {visibleDetectedFields.length ? <div className="detected-fields__selection-bar"><span>{selectedDetectedIndexes.length ? `${selectedDetectedIndexes.length}件選択中` : "追加する項目をタップしてください"}</span><button type="button" onClick={addSelectedDetectedFields} disabled={!selectedDetectedIndexes.length}>{selectedDetectedIndexes.length === 1 ? "追加して条件を編集" : selectedDetectedIndexes.length > 1 ? `選択した${selectedDetectedIndexes.length}件を追加` : "項目を選択してください"}</button></div> : null}
             {visibleDetectedFields.length ? <div className="detected-fields__list">{visibleDetectedFields.map((item, index) => { const selected = selectedDetectedIndexes.includes(index); return <button type="button" key={`${item.name}-${index}`} className={selected ? "is-selected" : undefined} aria-pressed={selected} onClick={() => setSelectedDetectedIndexes((current) => current.includes(index) ? current.filter((value) => value !== index) : [...current, index])}><span>{item.name}</span><strong>{item.value}</strong><i>{selected ? "✓" : "＋"}</i></button>; })}</div> : <p className="detected-fields__empty">安全に自動判定できる項目がありません。本文で取得したい値だけを選択してください。</p>}
           </div>
           <details className="email-edit-details">
@@ -1669,10 +1670,11 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           <button type="button" className="add-rule-button" onClick={addRule}><Icon name="plus" size={17} /> 項目を追加</button>
 
           {selectedRule ? (
-            <div className="rule-form">
+            <div ref={ruleFormRef} className="rule-form">
               <label className="rule-name-field"><span>取得項目名 <small>シートで使う名前</small></span><input value={selectedRule.name} onChange={(event) => updateRule({ name: event.target.value, anchorConfirmed: true })} placeholder="例：注文番号、予約日時、会社名、金額" disabled={busy === "save"} /><small>ここを変更しても、メール本文から探す見出しと取得結果は変わりません。</small></label>
-              <label className="rule-condition-field"><span>値の種類 / 範囲の決め方 <small>抽出条件</small></span><select value={selectedEditorMethod} onChange={(event) => updateSelectedRuleCondition({ method: event.target.value as EditableExtractionMethod })} disabled={busy === "save"}>{editableMethodsForRule(selectedRule).map((method) => <option key={method} value={method}>{editableMethodLabel(selectedRule, method)}</option>)}</select><small>取得範囲：{selectedRule.method === "regex" && selectedRule.locator ? locatorBoundaryLabel(selectedRule.locator) : "見出しの直後から行末または次の項目まで"}</small>{selectedRule.locator?.kind === "label" && (selectedRule.locator.lineEnd === true || Boolean(selectedRule.locator.suffix)) ? <small>この取得範囲では誤取得を防ぐため、形式を確認できない「文字」は選べません。</small> : null}</label>
+              <label className="rule-condition-field"><span>値の種類 / 範囲の決め方 <small>抽出条件</small></span><select value={selectedEditorMethod} onChange={(event) => updateSelectedRuleCondition({ method: event.target.value as EditableExtractionMethod })} disabled={busy === "save"}>{editableMethodsForRule(selectedRule).map((method) => <option key={method} value={method}>{editableMethodLabel(selectedRule, method)}</option>)}</select><small>取得範囲：{selectedRule.method === "regex" && selectedRule.locator ? locatorBoundaryLabel(selectedRule.locator) : "見出しの直後から行末または次の項目まで"}</small>{selectedRule.locator?.kind === "label" && selectedRule.locator.lineEnd === true ? <small>行末だけを終端にする自由文は、誤取得を防ぐため「文字」として保存できません。</small> : null}</label>
               <label className="rule-heading-field"><span>項目を見分ける見出し <small>基準となるテキスト</small></span><input value={selectedEditorHeading} onChange={(event) => updateSelectedRuleCondition({ heading: event.target.value })} placeholder={`例：${selectedRule.name || "氏名"}`} disabled={busy === "save"} /><small>本文中の値ではなく、その値の直前にある見出しを入力します。「→」がある場合は、外側から順に使う見出しです。</small></label>
+              <div className="rule-boundary-field"><span>取得を終える位置 <small>自動判定した終端</small></span><strong>{selectedRule.method === "regex" && selectedRule.locator ? locatorBoundaryLabel(selectedRule.locator) : "まだ確定していません"}</strong><small>選んだ値の直後にある次の見出し・固定の目印・対応する括弧・行末のいずれかを保存します。終端が消えた、または複数見つかった場合は転記しません。</small></div>
               {selectedRule.method !== "regex" ? <p className="rule-safety-note">見出しが現在の本文内で1件に決まると、取得範囲を安全な自動設定へ切り替えます。取得できる状態になるまで自動転記は開始しません。</p> : null}
               {selectedRule.aliases?.length ? <p className="rule-safety-note">この保存済み設定では、以前に登録した追加見出しも使われています。基準となる見出しまたは抽出条件を変更すると解除され、表示中の見出しだけで判定します。</p> : null}
               <div className={`live-result ${selectedPreviewReady ? "is-success" : "is-warning"}`} role="status" aria-live="polite" aria-atomic="true"><span>「{selectedRule.name || "未入力"}」の自動プレビュー <small>入力するたびに、現在表示中のメール本文で再判定</small></span><strong>{selectedPreviewTitle}</strong>{selectedPreviewReady ? <b>{selectedExtraction?.value}</b> : null}<small className="live-result__basis">見出し「{selectedEditorHeading || "未入力"}」／条件「{editableMethodLabel(selectedRule, selectedEditorMethod)}」</small><i className={selectedPreviewReady ? "is-success" : "is-warning"}>{selectedPreviewReady ? "✓" : "!"}</i>{!selectedPreviewVerified ? <small className="live-result__reason">保存時のメール本文は保存していません。左で一致する実メールを選ぶか、サンプル本文を手動で調整してください。</small> : !selectedRuleIsSafe ? <small className="live-result__reason">現在の見出しから安全な取得範囲を1つに決められていません。本文から値を選び直すか、見出しを修正してください。</small> : selectedExtraction?.status !== "ok" && selectedExtraction?.reason ? <small className="live-result__reason">判定理由：{selectedExtraction.reason}</small> : null}</div>
