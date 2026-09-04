@@ -1636,7 +1636,7 @@ test("shows the safe extraction decision and fails closed on changed mail struct
   assert.match(page, /入力文字を正規表現として実行していません/);
   assert.match(page, /取得条件と誤取得防止を確認/);
   assert.match(page, /onClick=\{\(\) => void editSavedRule\(item\)\}[^>]*>設定を編集/);
-  assert.match(page, /ruleId \? "変更を保存" : "設定を保存"/);
+  assert.match(page, /ruleId \? "このルールに上書き保存" : "新しいルールとして保存"/);
   assert.match(page, /activeOverride && !selectedPreviewVerified/);
 });
 
@@ -1824,6 +1824,10 @@ test("supports ten saved rules, three active rules, and traceable automatic proc
   assert.doesNotMatch(page, /name: "取得項目1"/);
   assert.match(page, /保存済みルール \{savedRules\.length\}\/10件/);
   assert.match(page, /自動転記ON \{savedRules\.filter\(\(item\) => item\.active && !savedRuleNeedsAnchorReview\(item\)\)\.length\}\/3件/);
+  assert.match(page, /このルールに上書き保存/);
+  assert.match(page, /新しいルールとして保存/);
+  assert.match(page, /設定を残して別ルールにする/);
+  assert.match(page, /setRuleId\(null\)[\s\S]*setPreviewRuleId\("draft"\)/);
   assert.match(page, /この名前をSpreadsheetのB列へ出力します/);
   assert.match(worker, /rule_limit_reached/);
   assert.match(worker, /active_rule_limit_reached/);
