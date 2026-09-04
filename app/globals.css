@@ -2197,9 +2197,38 @@ svg {
 
 .marker-fields,
 .rule-heading-field,
+.rule-boundary-field,
 .live-result,
 .advanced-settings {
   grid-column: 1 / -1;
+}
+
+.rule-boundary-field {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border: 1px solid rgba(11, 29, 145, 0.2);
+  border-radius: 8px;
+  background: #f7f8ff;
+}
+
+.rule-boundary-field > span {
+  color: var(--black);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.rule-boundary-field > span small {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.rule-boundary-field strong {
+  color: var(--blue);
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .rule-form > label {
@@ -5309,6 +5338,7 @@ svg {
 
   .marker-fields,
   .rule-heading-field,
+  .rule-boundary-field,
   .live-result,
   .advanced-settings {
     grid-column: 1;
