@@ -994,7 +994,7 @@ export const methodLabels: Record<ExtractionMethod, string> = {
   email: "メールアドレス（見出しの後ろ）",
   phone: "電話番号（見出しの後ろ）",
   between: "2つの文字の間（旧形式・自動転記不可）",
-  regex: "サンプルから自動設定",
+  regex: "本文から設定した取得条件",
 };
 
 const cleanLabel = (value: string) => value

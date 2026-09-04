@@ -1377,11 +1377,11 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           {selectedRule ? (
             <div className="rule-form">
               <label><span>抽出項目名（自由入力）</span><input value={selectedRule.name} onChange={(event) => updateRule({ name: event.target.value })} placeholder="例：注文番号、予約日時、会社名、金額" /></label>
-              <label><span>値の種類 / 範囲の決め方</span><select value={selectedRule.method} onChange={(event) => {
+              {selectedRule.method !== "regex" ? <label><span>値の種類 / 範囲の決め方</span><select value={selectedRule.method} onChange={(event) => {
                 const method = event.target.value as ExtractionMethod;
                 const resetAnchor = selectedRule.method === "between" || selectedRule.method === "regex";
                 updateRule({ method, start: method === "between" ? selectedRule.start : resetAnchor ? selectedRule.name : selectedRule.start, end: method === "between" ? selectedRule.end : "", pattern: method === "regex" ? selectedRule.pattern : "", locator: method === "regex" ? selectedRule.locator : undefined });
-              }}>{Object.entries(methodLabels).map(([value, label]) => <option key={value} value={value} disabled={value === "regex" || value === "between"}>{label}</option>)}</select></label>
+              }}>{Object.entries(methodLabels).filter(([value]) => value !== "regex").map(([value, label]) => <option key={value} value={value} disabled={value === "between"}>{label}</option>)}</select></label> : null}
               {selectedRule.method !== "regex" ? (
                 <div className="marker-fields">
                   <label><span>{selectedRule.method === "between" ? "値の直前にある文字" : "項目を見分ける見出し"}</span><input value={selectedRule.start} onChange={(event) => updateRule({ start: event.target.value })} placeholder={selectedRule.method === "between" ? "例：【氏名】" : `例：${selectedRule.name || "氏名"}`} /></label>
