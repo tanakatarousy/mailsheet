@@ -521,7 +521,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [spreadsheetInput, setSpreadsheetInput] = useState("");
   const [sheetName, setSheetName] = useState("");
   const [sheetInfo, setSheetInfo] = useState<SheetInfo | null>(null);
-  const [busy, setBusy] = useState<"" | "gmail" | "sheet" | "save" | "write" | "run">("");
+  const [busy, setBusy] = useState<"" | "gmail" | "sheet" | "save" | "write">("");
   const [notice, setNotice] = useState<{ kind: "success" | "warning"; text: string } | null>(null);
   const [selectedText, setSelectedText] = useState("");
   const [selectedTextStart, setSelectedTextStart] = useState<number | null>(null);
@@ -529,6 +529,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [selectedDetectedIndexes, setSelectedDetectedIndexes] = useState<number[]>([]);
   const [previewRuleId, setPreviewRuleId] = useState<number | "draft" | null>(live ? "draft" : null);
   const [sheetConnection, setSheetConnection] = useState<{ state: "idle" | "checking" | "connected" | "error"; message: string }>({ state: "idle", message: "" });
+  const [sheetWriteResult, setSheetWriteResult] = useState<{ kind: "success" | "warning"; text: string } | null>(null);
   const [recentInputHistory, setRecentInputHistory] = useState<RecentInputHistory>(emptyRecentInputHistory);
   const savedRulesRef = useRef<HTMLElement | null>(null);
   const gmailResultsRef = useRef<HTMLDivElement | null>(null);
@@ -542,7 +543,6 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const watchRepairAttempted = useRef(false);
   const saveInFlightRef = useRef(false);
   const writeInFlightRef = useRef(false);
-  const runInFlightRef = useRef(false);
   const gmailRequestGenerationRef = useRef(0);
   const editorRevisionRef = useRef(0);
   const editorSessionRef = useRef(0);
@@ -1385,25 +1385,32 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
 
   const testWrite = async () => {
     if (!selectedPreviewVerified) {
-      setNotice({ kind: "warning", text: "先に確認用メールを選ぶか、サンプル本文を調整してください。" });
+      const text = "先に確認用メールを選ぶか、サンプル本文を調整してください。";
+      setNotice({ kind: "warning", text });
+      setSheetWriteResult({ kind: "warning", text });
       scrollToRef(mailPreviewRef);
       return;
     }
     const unsafeAutomatic = rules.find(extractionFieldNeedsSafetyReview);
     if (unsafeAutomatic) {
       setSelectedRuleId(unsafeAutomatic.id);
-      setNotice({ kind: "warning", text: `「${unsafeAutomatic.name}」は安全な取得範囲を確定できていません。見出しを修正して自動プレビューを確認してください。` });
+      const text = `「${unsafeAutomatic.name}」は安全な取得範囲を確定できていません。見出しを修正して自動プレビューを確認してください。`;
+      setNotice({ kind: "warning", text });
+      setSheetWriteResult({ kind: "warning", text });
       scrollToRef(extractionRulesRef);
       return;
     }
     if (hasMissingResult) {
-      setNotice({ kind: "warning", text: "抽出できていない項目があります。先にルールを調整してください。" });
+      const text = "抽出できていない項目があります。先にルールを調整してください。";
+      setNotice({ kind: "warning", text });
+      setSheetWriteResult({ kind: "warning", text });
       return;
     }
-    if (writeInFlightRef.current || runInFlightRef.current) return;
+    if (writeInFlightRef.current) return;
     writeInFlightRef.current = true;
     setBusy("write");
     setNotice(null);
+    setSheetWriteResult(null);
     try {
       const values = sheetInfo?.headers.length
         ? sheetInfo.headers.slice(2).map((header) => results.find(({ rule }) => resolveMappedSheetColumn(sheetInfo.headers, mappings[rule.id]) === header.column)?.value || "")
@@ -1429,43 +1436,19 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         subject: emailMeta.subject,
         destination: `${sheetInfo?.spreadsheetName || "Spreadsheet"} / ${sheetName}`,
       });
-      setNotice({
-        kind: "success",
-        text: response.skipped
-          ? emailMeta.messageId
-            ? "このメールは同じSheetへの書き込み受付済みです。重複行は追加しませんでした。Google Sheetsで結果を確認してください。"
-            : "同じテスト操作は受付済みです。重複行は追加しませんでした。Google Sheetsで結果を確認してください。"
-          : `テスト行を書き込みました${response.updatedRange ? `（${response.updatedRange}）` : ""}。`,
-      });
+      const text = response.skipped
+        ? "同じテスト操作は受付済みです。重複行は追加しませんでした。Google Sheetsで結果を確認してください。"
+        : `テスト行を書き込みました${response.updatedRange ? `（${response.updatedRange}）` : ""}。`;
+      setNotice({ kind: "success", text });
+      setSheetWriteResult({ kind: "success", text });
+      testRequestRef.current = { signature: "", idempotencyKey: "" };
       onDataChanged?.();
     } catch (error) {
-      setNotice({ kind: "warning", text: errorText(error) });
+      const text = errorText(error);
+      setNotice({ kind: "warning", text });
+      setSheetWriteResult({ kind: "warning", text });
     } finally {
       writeInFlightRef.current = false;
-      setBusy("");
-    }
-  };
-
-  const runRule = async () => {
-    if (!ruleId) {
-      setNotice({ kind: "warning", text: "先にルールを保存してください。" });
-      return;
-    }
-    if (runInFlightRef.current || writeInFlightRef.current) return;
-    runInFlightRef.current = true;
-    setBusy("run");
-    setNotice(null);
-    try {
-      const response = await postJson<{ ok: true; result: { success: number; review: number; skipped: number } }>(`/api/rules/${ruleId}/run`, {});
-      setNotice({
-        kind: response.result.review ? "warning" : "success",
-        text: `同期完了：成功 ${response.result.success}件 / 要確認 ${response.result.review}件 / 処理済み ${response.result.skipped}件`,
-      });
-      onDataChanged?.();
-    } catch (error) {
-      setNotice({ kind: "warning", text: errorText(error) });
-    } finally {
-      runInFlightRef.current = false;
       setBusy("");
     }
   };
@@ -1763,7 +1746,8 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         </div>
         {live && sheetConnection.state === "connected" && !mappingsComplete ? <div className="mapping-auto-setup"><div><strong>列が足りない、または未割当の項目があります。</strong><span>既存の1行目を「転記日時＋転記ルール＋取得項目」に整え、列を自動で割り当てます。</span></div><button type="button" onClick={autoConfigureSheet} disabled={Boolean(busy)}>{busy === "sheet" ? "設定中…" : "1行目と列を自動設定"}</button></div> : null}
         <p className="mapping-timestamp-note">A列は「転記日時」、B列は編集可能な「転記ルール名」専用です。取得項目はC列以降へ出力します。</p>
-        {live ? <div className="sheet-actions"><button type="button" className="button button--blue" onClick={testWrite} disabled={Boolean(busy) || sheetConnection.state !== "connected"}>{busy === "write" ? "書き込み中…" : "この内容をテスト書き込み"}</button><button type="button" className="button button--outline" onClick={runRule} disabled={Boolean(busy) || !ruleId || sheetConnection.state !== "connected"}>{busy === "run" ? "転記中…" : "一致メールを手動で転記"}</button></div> : null}
+        {live ? <div className="sheet-actions"><button type="button" className="button button--blue" onClick={testWrite} disabled={Boolean(busy) || sheetConnection.state !== "connected"}>{busy === "write" ? "書き込み中…" : "この内容をテスト書き込み"}</button></div> : null}
+        {live && sheetWriteResult ? <p className={`sheet-write-result is-${sheetWriteResult.kind}`} role="status" aria-live="polite">{sheetWriteResult.text}</p> : null}
       </section>
 
       <section ref={testSectionRef} className="test-section" aria-labelledby="test-title">
@@ -2355,12 +2339,9 @@ function GettingStartedGuide({ auth, onNavigate }: { auth: AuthStatus | null; on
         </article>
 
         <article id="guide-step-06" className="guide-step">
-          <header><span>06</span><div><small>START TRANSFER</small><h2>手動転記か、新着メールの自動転記を選ぶ</h2></div></header>
+          <header><span>06</span><div><small>START TRANSFER</small><h2>新着メールの自動転記を開始する</h2></div></header>
           <div className="guide-step__body">
-            <div className="guide-mode-grid">
-              <section><span>必要なときだけ</span><h3>一致メールを手動で転記</h3><p>ボタンを押した時点で、最近届いた未処理の一致メールを探して転記します。すでに届いているメールを転記したいときに使います。</p><strong>操作するまで転記しません</strong></section>
-              <section className="is-auto"><span>今後の受信を自動化</span><h3>新着メールを自動転記 ON</h3><p>ONでルールを保存した後、新しく届いた条件一致メールを受信のたびに転記します。ONにする前の過去メールは自動転記しません。</p><strong>保存できるルールは10件／ONは3件まで</strong></section>
-            </div>
+            <div className="guide-mode-grid"><section className="is-auto"><span>今後の受信を自動化</span><h3>新着メールを自動転記 ON</h3><p>ONでルールを保存した後、新しく届いた条件一致メールを受信のたびに転記します。ONにする前の過去メールは自動転記しません。</p><strong>保存できるルールは10件／ONは3件まで</strong></section></div>
             <div className="guide-important"><Icon name="check" size={22} /><div><strong>「自動追加ON」の意味は、これです。</strong><p>名称を「新着メールを自動転記 ON」に変更しました。入力候補を自動追加する機能ではありません。新しいメールを受信したときに、保存ルールを自動実行する設定です。</p></div></div>
             <div className="guide-finish-actions"><button type="button" className="button button--blue" onClick={() => onNavigate("rules")}>転記ルールを作る <Icon name="arrow" size={16} /></button><button type="button" className="button button--outline" onClick={() => onNavigate("history")}>処理履歴を見る</button></div>
           </div>
@@ -2369,7 +2350,7 @@ function GettingStartedGuide({ auth, onNavigate }: { auth: AuthStatus | null; on
 
       <section className="guide-troubleshooting">
         <div><small>WHEN SOMETHING GOES WRONG</small><h2>転記されないときは</h2></div>
-        <ol><li><strong>処理履歴を開く</strong><span>「成功」「転記なし」「要確認」「失敗」と理由を確認します。</span></li><li><strong>過去メールか確認</strong><span>ONより前に届いたメールは「一致メールを手動で転記」を使います。</span></li><li><strong>ルールを開く</strong><span>差出人・件名、抽出結果、Spreadsheetの接続、出力列を順番に確認します。</span></li></ol>
+        <ol><li><strong>処理履歴を開く</strong><span>「成功」「転記なし」「要確認」「失敗」と理由を確認します。</span></li><li><strong>受信日時を確認</strong><span>自動転記をONにして保存した後の新着メールが対象です。</span></li><li><strong>ルールを開く</strong><span>差出人・件名、抽出結果、Spreadsheetの接続、出力列を順番に確認します。</span></li></ol>
         <button type="button" className="button button--outline button--small" onClick={() => onNavigate("history")}>処理履歴へ <Icon name="arrow" size={16} /></button>
       </section>
     </section>
