@@ -1589,6 +1589,8 @@ test("jumps directly between extraction rules and Google Sheets mapping", async 
   assert.match(page, /取得項目へ戻る/);
   assert.match(styles, /\.step-transition-button/);
   assert.match(styles, /\.rule-pane__heading/);
+  assert.match(styles, /@media \(max-width: 1120px\)[\s\S]*?\.rule-editor-grid\s*\{\s*grid-template-columns: 1fr;/);
+  assert.match(styles, /\.step-transition-button\s*\{[\s\S]*?max-width: 46%;/);
   assert.match(styles, /\.step-back-button/);
 });
 
