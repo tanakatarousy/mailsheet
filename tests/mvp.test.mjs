@@ -1093,12 +1093,11 @@ test("ships the complete LP and interactive app prototype", async () => {
     "BASE / STORES / Shopify",
     "本文中の値をドラッグして選択",
     "この文字を取得項目にする",
-    "開始位置",
-    "取得範囲",
+    "判定条件",
     "自動プレビュー",
-    "入力・範囲変更のたびに再判定",
+    "条件変更のたびに再判定",
     "候補が複数ある場合は、推測せず",
-    "取得できる状態になるまで自動転記は開始しません",
+    "終了位置が消えた、複数見つかった",
   ]) {
     assert.match(page, new RegExp(copy));
   }
@@ -1641,14 +1640,13 @@ test("shows the safe extraction decision and fails closed on changed mail struct
   assert.match(extractValueResult(birthdaySample, missingHeading).reason, /存在しない見出し/);
 
   assert.match(page, /取得項目名 <small>シートで使う名前<\/small>/);
-  assert.match(page, /値の種類 <small>形式チェック<\/small>/);
-  assert.match(page, /開始位置 <small>この見出しの直後<\/small>/);
-  assert.match(page, /取得範囲 <small>開始と終了<\/small>/);
+  assert.match(page, /判定条件 <small>実際に保存する条件<\/small>/);
+  assert.doesNotMatch(page, /値の種類 <small>形式チェック|開始位置 <small>この見出しの直後/);
   assert.doesNotMatch(page, /別のメール表記にも対応（任意）|追加で探す見出し|通常は空欄で問題ありません|複数ある場合は読点/);
   assert.match(page, /自動プレビュー/);
-  assert.match(page, /入力・範囲変更のたびに再判定/);
+  assert.match(page, /条件変更のたびに再判定/);
   assert.match(page, /この範囲で取得できます/);
-  assert.match(page, /メール情報をそのまま取得/);
+  assert.match(page, /Gmailから直接取得/);
   assert.match(page, /role="status" aria-live="polite" aria-atomic="true"/);
   assert.match(page, /正常に取得できます/);
   assert.match(page, /この設定では取得できません/);
@@ -1662,8 +1660,8 @@ test("shows the safe extraction decision and fails closed on changed mail struct
   assert.match(page, /initialEditorSession === editorSessionRef\.current/);
   assert.match(page, /active && ruleId !== item\.id/);
   assert.match(page, /確認用メールで自動プレビューを確認し/);
-  assert.match(page, /genericTextWouldLoseSafety/);
-  assert.match(page, /真偽値（JSON項目）/);
+  assert.match(page, /本文で取得範囲を選び直す/);
+  assert.match(page, /周囲の見出し構造がサンプルと一致すること/);
   assert.match(page, /判定理由：/);
   assert.match(page, /入力文字を正規表現として実行していません/);
   assert.match(page, /取得条件と誤取得防止を確認/);
@@ -1860,7 +1858,7 @@ test("supports ten saved rules, three active rules, and traceable automatic proc
   assert.match(page, /新しいルールとして保存/);
   assert.match(page, /設定を残して別ルールにする/);
   assert.match(page, /追加して条件を編集/);
-  assert.match(page, /取得範囲 <small>開始と終了<\/small>/);
+  assert.match(page, /判定条件 <small>実際に保存する条件<\/small>/);
   assert.match(page, /setRuleId\(null\)[\s\S]*setPreviewRuleId\("draft"\)/);
   assert.match(page, /この名前をSpreadsheetのB列へ出力します/);
   assert.match(worker, /rule_limit_reached/);
