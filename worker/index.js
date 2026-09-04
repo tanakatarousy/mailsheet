@@ -8,7 +8,8 @@ const OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/spreadsheets",
 ];
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
-const METHODS = new Set(["after", "between", "number", "money", "date", "email", "phone", "regex"]);
+const METHODS = new Set(["after", "between", "number", "money", "date", "email", "phone", "regex", "source"]);
+const SOURCE_FIELDS = new Set(["subject", "from", "date", "receivedAt", "body"]);
 const SESSION_IDLE_SECONDS = 7 * 24 * 60 * 60;
 const SESSION_IDLE_MS = SESSION_IDLE_SECONDS * 1000;
 // Real extraction-rule IDs are positive AUTOINCREMENT values. Rule 0 is
@@ -1107,6 +1108,10 @@ function normalizeSafeExtractionLocator(locator) {
 
 function normalizeField(field, index, allowLegacyRegex = false) {
   const method = METHODS.has(field?.method) ? field.method : "after";
+  const sourceField = method === "source" && SOURCE_FIELDS.has(field?.sourceField) ? field.sourceField : "";
+  if (method === "source" && !sourceField) {
+    throw new HttpError(400, "取得するメール情報を選択してください。", "invalid_source_field");
+  }
   if (method === "between" && !allowLegacyRegex) {
     throw new HttpError(400, "旧形式の範囲指定です。本文から取得したい値を選び直してください。", "unsafe_extraction_pattern");
   }
@@ -1133,7 +1138,22 @@ function normalizeField(field, index, allowLegacyRegex = false) {
     ...(locator ? { locator } : {}),
     anchorConfirmed: Boolean(field?.anchorConfirmed),
     aliases,
+    ...(sourceField ? { sourceField } : {}),
   };
+}
+
+function sourceFieldIsValid(field) {
+  return field?.method === "source" && SOURCE_FIELDS.has(field?.sourceField);
+}
+
+function extractMessageFieldResult(message, field, allFields) {
+  if (field.method !== "source") return extractValueResult(message.body, field, allFields);
+  if (!sourceFieldIsValid(field)) return { value: "", status: "invalid", reason: "取得するメール情報が未設定です。" };
+  const rawValue = field.sourceField === "body" ? message.body : message[field.sourceField];
+  const value = String(rawValue || "").trim();
+  if (!value) return { value: "", status: "missing", reason: "指定したメール情報がありません。" };
+  if (value.length > 50000) return { value: "", status: "invalid", reason: "本文が長すぎるため、1セルへそのまま出力できません。" };
+  return { value, status: "ok", reason: "" };
 }
 
 function normalizeRuleBody(body) {
@@ -1218,7 +1238,7 @@ async function handleRuleSave(request, env) {
   const db = requireDb(env);
   let gmailWatch = null;
   if (body.active) {
-    const unsafeField = body.fields.find((field) => field.method !== "regex" || !safeLocatorIsValid(field.locator));
+    const unsafeField = body.fields.find((field) => field.method === "source" ? !sourceFieldIsValid(field) : field.method !== "regex" || !safeLocatorIsValid(field.locator));
     if (unsafeField) {
       throw new HttpError(400, `「${unsafeField.name}」は旧形式の取得条件です。本文から取得したい値を選び直してください。`, "unsafe_extraction_pattern");
     }
@@ -2098,12 +2118,12 @@ function extractValue(body, rule, allRules = [rule]) {
   return extractValueResult(body, rule, allRules).value;
 }
 const methodLabels = {
-  after: "\u6587\u5B57\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
-  number: "\u6570\u5B57\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
-  money: "\u91D1\u984D\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
-  date: "\u65E5\u4ED8\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
-  email: "\u30E1\u30FC\u30EB\u30A2\u30C9\u30EC\u30B9\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
-  phone: "\u96FB\u8A71\u756A\u53F7\uFF08\u898B\u51FA\u3057\u306E\u5F8C\u308D\uFF09",
+  after: "\u6587\u5B57",
+  number: "\u6570\u5B57",
+  money: "\u91D1\u984D",
+  date: "\u65E5\u4ED8\u30FB\u65E5\u6642",
+  email: "\u30E1\u30FC\u30EB\u30A2\u30C9\u30EC\u30B9",
+  phone: "\u96FB\u8A71\u756A\u53F7",
   between: "2\u3064\u306E\u6587\u5B57\u306E\u9593\uFF08\u8A73\u7D30\u8A2D\u5B9A\uFF09",
   regex: "\u30B5\u30F3\u30D7\u30EB\u304B\u3089\u81EA\u52D5\u8A2D\u5B9A"
 };
@@ -2135,7 +2155,7 @@ async function handleRuleRun(request, env, ruleId) {
 
 async function processSavedRule(env, userId, rule, options = {}) {
   const db = requireDb(env);
-  const unsafeField = rule.fields.find((field) => field.method !== "regex" || !safeLocatorIsValid(field.locator));
+  const unsafeField = rule.fields.find((field) => field.method === "source" ? !sourceFieldIsValid(field) : field.method !== "regex" || !safeLocatorIsValid(field.locator));
   if (unsafeField) {
     await addHistory(db, {
       userId,
@@ -2236,7 +2256,7 @@ async function processSavedRule(env, userId, rule, options = {}) {
     let errorMessage = "";
     try {
       extracted = rule.fields.map((field) => {
-        const result = extractValueResult(message.body, field, rule.fields);
+        const result = extractMessageFieldResult(message, field, rule.fields);
         return { field, result, value: result.value };
       });
       const missing = extracted.filter((item) => item.result.status !== "ok");
