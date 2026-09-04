@@ -72,6 +72,10 @@ const spreadsheetColumnAt = (zeroBasedIndex: number) => {
   return column;
 };
 const outputColumnForRuleIndex = (ruleIndex: number) => spreadsheetColumnAt(ruleIndex + 2);
+const spreadsheetUrlFromId = (spreadsheetId: string) => spreadsheetId
+  ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`
+  : "";
+const sheetApiConnectedMessage = (info: SheetInfo) => `Google Sheets APIで接続確認済み：${info.spreadsheetName} / ${info.sheetName}`;
 const locatorBoundaryLabel = (locator: SafeExtractionLocator) => {
   if (locator.kind === "block") return `見出しの次の行から「${locator.endHeading || "次の見出し"}」の直前まで`;
   if (locator.kind === "json") return "保存したJSONの同じ項目パス";
@@ -704,7 +708,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setSelectedTextStart(null);
     setPreviewRuleId(null);
     setSelectedRuleId(item.fields.some((field) => field.id === preferredFieldId) ? preferredFieldId! : item.fields[0]?.id ?? 1);
-    setSpreadsheetInput(item.spreadsheetId);
+    setSpreadsheetInput(spreadsheetUrlFromId(item.spreadsheetId));
     setSheetName(item.sheetName);
     setMappings(Object.fromEntries(Object.entries(item.mappings).map(([key, value]) => [Number(key), value])));
     setAutoAdd(item.active && !savedRuleNeedsAnchorReview(item));
@@ -1160,7 +1164,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       });
       const info: SheetInfo = response;
       setSheetInfo(info);
-      setSpreadsheetInput(info.spreadsheetId);
+      setSpreadsheetInput(spreadsheetUrlFromId(info.spreadsheetId));
       setSheetName(info.sheetName);
       rememberInput("spreadsheet", enteredSpreadsheet || info.spreadsheetId, `${info.spreadsheetName} / ${info.sheetName}`);
       setMappings((current) => Object.fromEntries(rulesRef.current.map((rule, index) => {
@@ -1168,7 +1172,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
         const matchingColumn = info.headers.slice(2).find((header) => header.label === rule.name)?.column;
         return [rule.id, currentColumn || matchingColumn || info.headers[index + 2]?.column || ""];
       })));
-      setSheetConnection({ state: "connected", message: `接続済み：${info.spreadsheetName} / ${info.sheetName}` });
+      setSheetConnection({ state: "connected", message: sheetApiConnectedMessage(info) });
       if (!quiet) setNotice({ kind: "success", text: `「${info.spreadsheetName} / ${info.sheetName}」へ接続できました。` });
     } catch (error) {
       const message = errorText(error);
@@ -1196,7 +1200,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     const nextMappings = Object.fromEntries(rules.map((rule, index) => [rule.id, info.headers[index + 2]?.column || ""]));
     setSheetInfo(info);
     setMappings(nextMappings);
-    setSheetConnection({ state: "connected", message: `接続済み：${info.spreadsheetName} / ${info.sheetName}` });
+    setSheetConnection({ state: "connected", message: sheetApiConnectedMessage(info) });
     return { info, mappings: nextMappings };
   };
 
