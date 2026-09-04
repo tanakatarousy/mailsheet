@@ -1083,9 +1083,11 @@ test("ships the complete LP and interactive app prototype", async () => {
     "本文中の値をドラッグして選択",
     "この文字を取得項目にする",
     "項目を見分ける見出し",
-    "追加で探す見出し",
+    "基準となるテキスト",
+    "自動プレビュー",
+    "入力するたびに",
     "候補が複数ある場合は、推測せず",
-    "自動転記に使うには",
+    "取得できる状態になるまで自動転記は開始しません",
   ]) {
     assert.match(page, new RegExp(copy));
   }
@@ -1550,7 +1552,14 @@ test("selects detected fields in a batch and assigns output columns from C", asy
 });
 
 test("shows the safe extraction decision and fails closed on changed mail structures", async () => {
-  const { detectFields, extractValueResult } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const {
+    detectFields,
+    extractValueResult,
+    extractionEditorHeading,
+    extractionEditorMethod,
+    updateExtractionRuleFromEditor,
+  } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const { extractWorkerValueResult } = await import(path.join(root, "worker", "index.js"));
   const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
   const sample = "氏名：池田 隼人\n性別：男性\n郵便番号：140-0001\n住所：東京都品川区";
   const gender = detectFields(sample).find((item) => item.name === "性別");
@@ -1563,15 +1572,249 @@ test("shows the safe extraction decision and fails closed on changed mail struct
   assert.equal(extractValueResult("性別：男性\n郵便番号：140-0001\n性別：女性\n郵便番号：150-0001", gender.rule).status, "ambiguous");
   assert.equal(extractValueResult("氏名：山田 花子\n性別：入力してください\n郵便番号：150-0001\n住所：東京都渋谷区", gender.rule).status, "invalid");
 
+  assert.equal(extractionEditorHeading(gender.rule), "性別");
+  assert.equal(extractionEditorMethod(gender.rule), "after");
+  const renamed = { ...gender.rule, name: "応募者の性別" };
+  assert.equal(extractValueResult(sample, renamed).value, "男性");
+  assert.equal(extractionEditorHeading(renamed), "性別");
+
+  const configuredDraft = updateExtractionRuleFromEditor(sample, {
+    id: 99,
+    name: "任意のシート列名",
+    method: "after",
+    start: "項目名：",
+    end: "",
+    pattern: "",
+  }, { heading: "性別", method: "after" });
+  assert.equal(configuredDraft.method, "regex");
+  assert.equal(configuredDraft.name, "任意のシート列名");
+  assert.equal(extractValueResult(sample, configuredDraft).value, "男性");
+
+  const birthdaySample = "氏名：池田 隼人\n生年月日：1996年04月15日（30歳）\n性別：男性\n郵便番号：140-0001";
+  const name = detectFields(birthdaySample).find((item) => item.name === "氏名");
+  assert.ok(name);
+  const birthday = updateExtractionRuleFromEditor(birthdaySample, { ...name.rule, aliases: ["お名前"] }, { heading: "生年月日", method: "date" });
+  assert.equal(birthday.method, "regex");
+  assert.deepEqual(birthday.aliases, []);
+  assert.equal(extractionEditorHeading(birthday), "生年月日");
+  assert.equal(extractionEditorMethod(birthday), "date");
+  assert.equal(birthday.locator?.kind, "label");
+  assert.equal(birthday.locator?.nextLabel, "性別");
+  assert.equal(extractValueResult(birthdaySample, birthday).value, "1996年04月15日（30歳）");
+  assert.deepEqual(extractWorkerValueResult(birthdaySample, birthday), extractValueResult(birthdaySample, birthday));
+
+  const wrongType = updateExtractionRuleFromEditor(birthdaySample, birthday, { method: "phone" });
+  assert.equal(extractValueResult(birthdaySample, wrongType).status, "invalid");
+  assert.match(extractValueResult(birthdaySample, wrongType).reason, /値の種類/);
+  assert.deepEqual(extractWorkerValueResult(birthdaySample, wrongType), extractValueResult(birthdaySample, wrongType));
+  const missingHeading = updateExtractionRuleFromEditor(birthdaySample, birthday, { heading: "存在しない見出し" });
+  assert.equal(extractValueResult(birthdaySample, missingHeading).status, "missing");
+  assert.match(extractValueResult(birthdaySample, missingHeading).reason, /存在しない見出し/);
+
   assert.match(page, /取得項目名 <small>シートで使う名前<\/small>/);
-  assert.match(page, /メール本文で探す見出し/);
-  assert.match(page, /別のメール表記にも対応（任意）/);
-  assert.match(page, /追加で探す見出し/);
-  assert.match(page, /通常は空欄で問題ありません/);
-  assert.match(page, /このサンプル本文での取得結果/);
+  assert.match(page, /値の種類 \/ 範囲の決め方 <small>抽出条件<\/small>/);
+  assert.match(page, /項目を見分ける見出し <small>基準となるテキスト<\/small>/);
+  assert.doesNotMatch(page, /別のメール表記にも対応（任意）|追加で探す見出し|通常は空欄で問題ありません|複数ある場合は読点/);
+  assert.match(page, /自動プレビュー/);
+  assert.match(page, /入力するたびに、現在表示中のメール本文で再判定/);
+  assert.match(page, /role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(page, /正常に取得できます/);
+  assert.match(page, /この設定では取得できません/);
+  assert.match(page, /selectedPreviewReady = selectedPreviewVerified && selectedRuleIsSafe/);
+  assert.match(page, /previewRuleId === \(ruleId \?\? "draft"\)/);
+  assert.match(page, /gmailRequestGenerationRef/);
+  assert.match(page, /requestGeneration !== gmailRequestGenerationRef\.current/);
+  assert.match(page, /saveRevision !== editorRevisionRef\.current/);
+  assert.match(page, /saveSession === editorSessionRef\.current/);
+  assert.match(page, /initialEditorRevision === editorRevisionRef\.current/);
+  assert.match(page, /initialEditorSession === editorSessionRef\.current/);
+  assert.match(page, /active && ruleId !== item\.id/);
+  assert.match(page, /確認用メールで自動プレビューを確認し/);
+  assert.match(page, /genericTextWouldLoseSafety/);
+  assert.match(page, /真偽値（JSON項目）/);
   assert.match(page, /判定理由：/);
   assert.match(page, /入力文字を正規表現として実行していません/);
   assert.match(page, /取得条件と誤取得防止を確認/);
+  assert.match(page, /onClick=\{\(\) => void editSavedRule\(item\)\}[^>]*>設定を編集/);
+  assert.match(page, /ruleId \? "変更を保存" : "設定を保存"/);
+  assert.match(page, /activeOverride && !selectedPreviewVerified/);
+});
+
+test("keeps duplicate JSON leaf values bound to their original object paths", async () => {
+  const {
+    detectFields,
+    extractValueResult,
+    extractionEditorHeading,
+    updateExtractionRuleFromEditor,
+  } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const body = JSON.stringify({
+    primary: { name: "共通の宛名" },
+    billing: { name: "共通の宛名" },
+  });
+  const nameFields = detectFields(body).filter((field) => field.name === "name");
+
+  assert.equal(nameFields.length, 2);
+  assert.deepEqual(
+    nameFields.map((field) => field.rule.locator?.path?.join(".")).sort(),
+    ["billing.name", "primary.name"],
+  );
+  const billing = nameFields.find((field) => field.rule.locator?.path?.[0] === "billing");
+  assert.ok(billing);
+  assert.equal(extractionEditorHeading(billing.rule), "billing → name");
+
+  const edited = updateExtractionRuleFromEditor(
+    body,
+    billing.rule,
+    { heading: "name" },
+    nameFields,
+  );
+  assert.deepEqual(edited.locator?.path, ["billing", "name"]);
+  assert.deepEqual(extractValueResult(body, edited), {
+    value: "共通の宛名",
+    status: "ok",
+    reason: "",
+  });
+});
+
+test("keeps a JSON boolean type when only its heading is edited", async () => {
+  const {
+    detectFields,
+    extractValueResult,
+    extractionEditorMethod,
+    updateExtractionRuleFromEditor,
+  } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const body = JSON.stringify({
+    profile: { active: true },
+    billing: { enabled: false },
+  });
+  const fields = detectFields(body);
+  const active = fields.find((field) => field.rule.locator?.path?.join(".") === "profile.active");
+  assert.ok(active);
+  assert.equal(extractionEditorMethod(active.rule), "boolean");
+
+  const edited = updateExtractionRuleFromEditor(body, active.rule, { heading: "enabled" }, fields);
+  assert.equal(edited.method, "regex");
+  assert.equal(edited.locator?.kind, "json");
+  assert.deepEqual(edited.locator?.path, ["billing", "enabled"]);
+  assert.equal(edited.locator?.jsonType, "boolean");
+  assert.equal(extractionEditorMethod(edited), "boolean");
+  assert.deepEqual(extractValueResult(body, edited), {
+    value: "false",
+    status: "ok",
+    reason: "",
+  });
+});
+
+test("changes only the value type of a compound-label locator for a method-only edit", async () => {
+  const {
+    detectFields,
+    extractValueResult,
+    ruleFromSelection,
+    updateExtractionRuleFromEditor,
+  } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const body = "応募者：【氏名】池田 隼人【電話番号】090-1111-2222";
+  const selected = ruleFromSelection(body, "池田 隼人", 201, "氏名", body.indexOf("池田 隼人"));
+  assert.ok(selected);
+  assert.equal(selected.rule.locator?.kind, "label");
+  assert.equal(selected.rule.locator?.label, "応募者");
+  assert.equal(selected.rule.locator?.innerLabel, "氏名");
+  const detected = detectFields(body);
+  assert.equal(detected.filter((field) => field.name === "氏名").length, 1);
+
+  const edited = updateExtractionRuleFromEditor(body, selected.rule, { method: "phone" }, detected);
+  assert.equal(edited.method, "regex");
+  assert.equal(edited.name, selected.rule.name);
+  const { sampleValueType: previousType, ...previousLocator } = selected.rule.locator;
+  const { sampleValueType: editedType, ...editedLocator } = edited.locator;
+  assert.equal(previousType, "text");
+  assert.equal(editedType, "phone");
+  assert.deepEqual(editedLocator, previousLocator);
+  assert.equal(extractValueResult(body, edited).status, "invalid");
+  assert.match(extractValueResult(body, edited).reason, /値の種類/);
+});
+
+test("promotes a matching legacy heading when only its value type changes", async () => {
+  const {
+    extractValueResult,
+    extractionLocatorIsSafe,
+    updateExtractionRuleFromEditor,
+  } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const body = "応募日時：2026/09/04";
+  const legacy = {
+    id: 301,
+    name: "応募日",
+    method: "after",
+    start: "応募日時：",
+    end: "",
+    pattern: "",
+    anchorConfirmed: true,
+  };
+
+  const edited = updateExtractionRuleFromEditor(body, legacy, { method: "date" });
+  assert.equal(edited.method, "regex");
+  assert.equal(extractionLocatorIsSafe(edited.locator), true);
+  assert.deepEqual(extractValueResult(body, edited), {
+    value: "2026/09/04",
+    status: "ok",
+    reason: "",
+  });
+});
+
+test("rebuilds a stale locator when the same heading moves to a new structure", async () => {
+  const {
+    detectFields,
+    extractValueResult,
+    updateExtractionRuleFromEditor,
+  } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const oldBody = "氏名：山田 太郎\n性別：男性";
+  const currentBody = "【氏名】山田 太郎\n【性別】男性";
+  const oldRule = detectFields(oldBody).find((field) => field.name === "氏名")?.rule;
+  assert.ok(oldRule);
+  assert.equal(extractValueResult(currentBody, oldRule).status, "missing");
+
+  const rebuilt = updateExtractionRuleFromEditor(currentBody, oldRule, { heading: "【氏名】" });
+  assert.equal(rebuilt.locator?.kind, "label");
+  assert.equal(rebuilt.locator?.bracketed, true);
+  assert.equal(rebuilt.locator?.inline, undefined);
+  assert.equal(rebuilt.locator?.nextLabel, "性別");
+  assert.deepEqual(extractValueResult(currentBody, rebuilt), {
+    value: "山田 太郎",
+    status: "ok",
+    reason: "",
+  });
+});
+
+test("keeps decorated duplicate block headings bound after character-by-character edits", async () => {
+  const {
+    detectFields,
+    extractValueResult,
+    extractionEditorHeading,
+    updateExtractionRuleFromEditor,
+  } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const body = "■ 1. Profile\nAlice\n■ 2. Profile\nAlice\n-----";
+  const profiles = detectFields(body).filter((field) => field.name === "Profile");
+  assert.equal(profiles.length, 2);
+  const second = profiles.find((field) => field.rule.locator?.heading === "■ 2. Profile");
+  assert.ok(second);
+  assert.equal(extractionEditorHeading(second.rule), "■ 2. Profile");
+
+  const partial = updateExtractionRuleFromEditor(body, second.rule, { heading: "■ 2. Profil" }, profiles);
+  const restored = updateExtractionRuleFromEditor(body, partial, { heading: "■ 2. Profile" }, profiles);
+  assert.equal(restored.locator?.heading, "■ 2. Profile");
+  const changed = "■ 1. Profile\nWrong\n■ 2. Profile\nRight\n-----";
+  assert.deepEqual(extractValueResult(changed, restored), {
+    value: "Right",
+    status: "ok",
+    reason: "",
+  });
+});
+
+test("shows the exact canonical question used by a QA locator", async () => {
+  const { detectFields, extractionEditorHeading } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const body = "Q1. お名前は？\n回答：山田 太郎";
+  const field = detectFields(body).find((item) => item.rule.locator?.kind === "qa");
+  assert.ok(field);
+  assert.equal(extractionEditorHeading(field.rule), "Q1. お名前は？");
 });
 
 test("supports ten saved rules, three active rules, and traceable automatic processing", async () => {

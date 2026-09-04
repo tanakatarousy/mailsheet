@@ -2150,9 +2150,22 @@ svg {
 }
 
 .marker-fields,
+.rule-heading-field,
 .live-result,
 .advanced-settings {
   grid-column: 1 / -1;
+}
+
+.rule-form > label {
+  min-width: 0;
+}
+
+.rule-form label > small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
 }
 
 .marker-fields {
@@ -2193,6 +2206,30 @@ svg {
   color: var(--blue);
   font-size: 14px;
   line-height: 1.6;
+}
+
+.live-result span small {
+  display: block;
+  margin-top: 2px;
+  color: inherit;
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.live-result b {
+  display: block;
+  margin-top: 3px;
+  color: var(--blue);
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.live-result__basis {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .live-result__reason {
@@ -2249,52 +2286,6 @@ svg {
   color: var(--blue);
   font-size: 10px;
   line-height: 1.6;
-}
-
-.automatic-rule-source {
-  display: grid;
-  gap: 3px;
-  padding: 10px 12px;
-  border: 1px solid rgba(11, 29, 145, 0.16);
-  border-radius: 7px;
-  background: white;
-}
-.automatic-rule-source span,
-.automatic-rule-source small { color: var(--muted); font-size: 10px; line-height: 1.45; }
-.automatic-rule-source strong { color: var(--blue); font-size: 13px; }
-
-.rule-alias-settings {
-  grid-column: 1 / -1;
-  padding: 11px 12px;
-  border: 1px solid rgba(11, 29, 145, 0.16);
-  border-radius: 7px;
-  background: white;
-}
-
-.rule-alias-settings summary {
-  color: var(--blue);
-  font-size: 11px;
-  font-weight: 750;
-  cursor: pointer;
-}
-
-.rule-alias-settings p {
-  margin: 9px 0 0;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.6;
-}
-
-.rule-alias-settings label {
-  display: grid;
-  margin-top: 10px;
-  gap: 5px;
-}
-
-.rule-alias-settings label > small {
-  color: var(--muted);
-  font-size: 9px;
-  line-height: 1.5;
 }
 
 .automatic-rule-details {
@@ -5261,6 +5252,7 @@ svg {
   }
 
   .marker-fields,
+  .rule-heading-field,
   .live-result,
   .advanced-settings {
     grid-column: 1;

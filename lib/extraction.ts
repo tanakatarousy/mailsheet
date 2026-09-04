@@ -8,6 +8,8 @@ export type ExtractionMethod =
   | "phone"
   | "regex";
 
+export type EditableExtractionMethod = Exclude<ExtractionMethod, "between" | "regex"> | "boolean";
+
 export type ExtractionRule = {
   id: number;
   name: string;
@@ -1001,6 +1003,156 @@ export const methodLabels: Record<ExtractionMethod, string> = {
   regex: "本文から設定した取得条件",
 };
 
+const methodFromSampleValueType = (valueType: SafeExtractionLocator["sampleValueType"]): EditableExtractionMethod => ({
+  text: "after",
+  number: "number",
+  money: "money",
+  date: "date",
+  email: "email",
+  phone: "phone",
+}[valueType || "text"] as EditableExtractionMethod);
+
+const sampleValueTypeFromMethod = (method: EditableExtractionMethod): NonNullable<SafeExtractionLocator["sampleValueType"]> => ({
+  after: "text",
+  number: "number",
+  money: "money",
+  date: "date",
+  email: "email",
+  phone: "phone",
+  boolean: "text",
+}[method] as NonNullable<SafeExtractionLocator["sampleValueType"]>);
+
+/** Returns the user-editable condition while preserving the internal safe-locator method. */
+export function extractionEditorMethod(rule: ExtractionRule): EditableExtractionMethod {
+  if (rule.method !== "regex") return rule.method === "between" ? "after" : rule.method;
+  if (rule.locator?.kind === "json") return rule.locator.jsonType === "number" ? "number" : rule.locator.jsonType === "boolean" ? "boolean" : "after";
+  return methodFromSampleValueType(rule.locator?.sampleValueType);
+}
+
+/** Returns the single heading/path users edit to identify this item in the current sample. */
+export function extractionEditorHeading(rule: ExtractionRule) {
+  const locator = rule.locator;
+  if (rule.method !== "regex" || !locator) return rule.start.trim();
+  if (locator.kind === "label") {
+    return locator.innerLabel
+      ? `${locator.label || ""} → ${locator.innerLabel}`.replace(/^\s*→\s*/, "")
+      : locator.label || "";
+  }
+  if (locator.kind === "block") return locator.heading || "";
+  if (locator.kind === "qa") return locator.question || "";
+  return locator.path?.join(" → ") || "";
+}
+
+function locatorWithEditorMethod(locator: SafeExtractionLocator, method: EditableExtractionMethod): SafeExtractionLocator {
+  if (locator.kind === "json") {
+    return { ...locator, jsonType: method === "number" ? "number" : method === "boolean" ? "boolean" : "string" };
+  }
+  return { ...locator, sampleValueType: sampleValueTypeFromMethod(method) };
+}
+
+function locatorWithEditorHeading(locator: SafeExtractionLocator, heading: string): SafeExtractionLocator {
+  if (locator.kind === "label") {
+    if (locator.innerLabel !== undefined) {
+      if (!heading.trim()) return { ...locator, label: "", innerLabel: "" };
+      const parts = heading.split(/\s*→\s*/).map((part) => part.trim()).filter(Boolean);
+      return parts.length >= 2
+        ? { ...locator, label: parts[0], innerLabel: parts.slice(1).join(" → ") }
+        : { ...locator, innerLabel: heading };
+    }
+    return { ...locator, label: heading };
+  }
+  if (locator.kind === "block") return { ...locator, heading };
+  if (locator.kind === "qa") return { ...locator, question: heading };
+  if (!heading.trim()) return { ...locator, path: [""] };
+  const enteredPath = heading.split(/\s*→\s*/).map((part) => part.trim()).filter(Boolean);
+  const path = [...(locator.path || [])];
+  if (enteredPath.length >= 2) return { ...locator, path: enteredPath };
+  if (path.length) path[path.length - 1] = heading.trim();
+  else path.push(heading.trim());
+  return { ...locator, path };
+}
+
+/**
+ * Applies the three user-facing editor inputs to an extraction rule.
+ * When the heading identifies one detected field in the current sample, the
+ * complete safe locator (including its end boundary and structure signature)
+ * is rebuilt instead of carrying stale surrounding-field assumptions forward.
+ */
+export function updateExtractionRuleFromEditor(
+  body: string,
+  rule: ExtractionRule,
+  patch: { heading?: string; method?: EditableExtractionMethod },
+  detectedFields: DetectedField[] = detectFields(body),
+): ExtractionRule {
+  const previousHeading = extractionEditorHeading(rule);
+  const heading = patch.heading ?? previousHeading;
+  const method = patch.method ?? extractionEditorMethod(rule);
+  const headingChanged = patch.heading !== undefined && semanticLabel(heading) !== semanticLabel(previousHeading);
+  const headingKey = semanticLabel(heading);
+  const matchingFields = headingKey
+    ? detectedFields.filter((field) => {
+        const detectedHeadings = [field.name, extractionEditorHeading(field.rule)];
+        return detectedHeadings.some((candidate) => semanticLabel(candidate) === headingKey);
+      })
+    : [];
+  const currentLocatorMatchesSample = rule.method === "regex" && Boolean(rule.locator)
+    && extractValueResult(body, { ...rule, aliases: [] }).status === "ok";
+
+  // Keep the current structural locator when only its value type (or the
+  // spelling of the same normalized heading) changes. Rebinding to a freshly
+  // detected field here can silently switch between equal-looking fields.
+  if (!headingChanged && rule.method === "regex" && rule.locator
+    && (currentLocatorMatchesSample || matchingFields.length !== 1)) {
+    const withHeading = patch.heading === undefined
+      ? rule.locator
+      : locatorWithEditorHeading(rule.locator, heading);
+    return {
+      ...rule,
+      start: heading,
+      locator: locatorWithEditorMethod(withHeading, method),
+      anchorConfirmed: true,
+      aliases: [],
+    };
+  }
+
+  if ((headingChanged || rule.method !== "regex" || !rule.locator || !currentLocatorMatchesSample)
+    && matchingFields.length === 1 && matchingFields[0].rule.locator) {
+    const locator = locatorWithEditorMethod(matchingFields[0].rule.locator, method);
+    return {
+      ...rule,
+      method: "regex",
+      start: heading,
+      end: "",
+      pattern: "",
+      locator,
+      anchorConfirmed: true,
+      aliases: [],
+    };
+  }
+
+  if (rule.method === "regex" && rule.locator) {
+    const locator = locatorWithEditorMethod(locatorWithEditorHeading(rule.locator, heading), method);
+    return {
+      ...rule,
+      start: heading,
+      locator,
+      anchorConfirmed: true,
+      aliases: [],
+    };
+  }
+
+  return {
+    ...rule,
+    method: method === "boolean" ? "after" : method,
+    start: heading,
+    end: "",
+    pattern: "",
+    locator: undefined,
+    anchorConfirmed: true,
+    aliases: [],
+  };
+}
+
 const cleanLabel = (value: string) => value
   .replace(/<[^<>]*>/g, "")
   .replace(/^[\s>■□◇◆*#・\d.]+/, "")
@@ -1178,7 +1330,26 @@ export function detectFields(body: string): DetectedField[] {
     const cleanValue = cleanDetectedValue(value);
     if (!cleanName || !cleanValue || cleanValue.length > 500) return;
     if (proseCandidateIssue(cleanValue)) return;
-    const key = `${cleanName}\u0000${cleanValue}`;
+    // Equal JSON leaf names/values can belong to different object paths. Keep
+    // each path so editor matching stays ambiguous instead of rebinding to the
+    // first occurrence.
+    const identity = locator.kind === "json"
+      ? `json:${(locator.path || []).join("\u0001")}`
+      : locator.kind === "block"
+        ? `block:${locator.heading || ""}\u0001${locator.endHeading || ""}`
+        : locator.kind === "qa"
+          ? `qa:${locator.question || ""}\u0001${String(locator.qaBracketed)}`
+          : `label:${[
+              locator.label,
+              locator.innerLabel,
+              locator.nextLabel,
+              locator.suffix,
+              locator.balancedEnd,
+              locator.bracketed,
+              locator.inline,
+              locator.lineEnd,
+            ].map((part) => String(part ?? "")).join("\u0001")}`;
+    const key = `${identity}\u0000${cleanName}\u0000${cleanValue}`;
     if (seen.has(key)) return;
     const signature = signatureFor(cleanValue);
     if (locator.kind !== "json" && !signature) return;
