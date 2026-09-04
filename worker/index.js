@@ -1240,7 +1240,7 @@ async function handleRuleSave(request, env) {
       throw new HttpError(400, `「${unsafeField.name}」は旧形式の取得条件です。本文から取得したい値を選び直してください。`, "unsafe_extraction_pattern");
     }
     if (!gmailPushConfigured(env)) {
-      throw new HttpError(503, "Gmail受信通知が未設定のため、新着メールの自動転記をONにできません。管理画面でPub/Sub設定を確認してください。", "gmail_push_not_configured");
+      throw new HttpError(503, "現在、自動転記を開始できません。しばらくしてからもう一度お試しください。", "gmail_push_not_configured");
     }
     try {
       gmailWatch = await registerGmailWatch(env, user.id);
@@ -1252,9 +1252,9 @@ async function handleRuleSave(request, env) {
         subject: `受信監視：${body.name}`,
         destination: "Gmail",
         status: "failed",
-        errorMessage: `Gmail受信監視を開始できませんでした：${message}`,
+        errorMessage: "自動転記を開始できませんでした。時間を置いてもう一度お試しください。",
       });
-      throw new HttpError(502, `ルールは保存されていません。Gmail受信監視を開始できませんでした：${message}`, "gmail_watch_failed");
+      throw new HttpError(502, "ルールは保存されていません。自動転記を開始できませんでした。時間を置いてもう一度お試しください。", "gmail_watch_failed");
     }
   }
   if (body.active && (!body.spreadsheetId || !body.sheetName)) {
@@ -1378,16 +1378,6 @@ async function handleRuleSave(request, env) {
     )
     .bind(id, user.id)
     .first();
-  if (gmailWatch) {
-    await addHistory(db, {
-      userId: user.id,
-      ruleId: id,
-      subject: `受信監視：${body.name}`,
-      destination: "Gmail",
-      status: "received",
-      errorMessage: "Gmailの受信監視を開始しました。Cloudflareへの新着通知を待っています。",
-    });
-  }
   return json({ ok: true, rule: parseRuleRow(saved), gmailWatchExpiresAt: Number(gmailWatch?.expiration || 0) || null });
 }
 
@@ -2480,7 +2470,7 @@ async function handleGmailWebhook(request, env) {
 async function handleWatchStart(request, env) {
   assertSameOrigin(request);
   const user = await requireAuthorizedUser(request, env);
-  if (!gmailPushConfigured(env)) throw new HttpError(503, "先にPub/Subの接続設定が必要です。", "gmail_push_not_configured");
+  if (!gmailPushConfigured(env)) throw new HttpError(503, "現在、自動転記を開始できません。しばらくしてからもう一度お試しください。", "gmail_push_not_configured");
   try {
     const watch = await registerGmailWatch(env, user.id);
     await addHistory(requireDb(env), {
@@ -2502,7 +2492,7 @@ async function handleWatchStart(request, env) {
       status: "failed",
       errorMessage: message,
     });
-    throw new HttpError(502, `Gmail受信監視を開始できませんでした：${message}`, "gmail_watch_failed");
+    throw new HttpError(502, "自動転記を開始できませんでした。時間を置いてもう一度お試しください。", "gmail_watch_failed");
   }
 }
 
@@ -2540,7 +2530,9 @@ async function historyRows(env, userId, limit = 100) {
   const result = await requireDb(env)
     .prepare(
       `SELECT id, rule_id, received_at, subject, extracted_count, destination, status, error_message, created_at
-       FROM processing_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
+       FROM processing_history
+       WHERE user_id = ? AND COALESCE(destination, '') <> 'Gmail'
+       ORDER BY created_at DESC LIMIT ?`,
     )
     .bind(userId, Math.min(Math.max(limit, 1), 500))
     .all();
