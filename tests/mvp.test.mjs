@@ -1582,11 +1582,13 @@ test("selects detected fields in a batch and assigns output columns from C", asy
 test("jumps directly between extraction rules and Google Sheets mapping", async () => {
   const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
   const styles = await readFile(path.join(root, "app", "globals.css"), "utf8");
+  assert.match(page, /className="rule-pane__heading"[\s\S]*?className="step-transition-button" onClick=\{\(\) => scrollToRef\(mappingSectionRef\)\}[\s\S]*?<section ref=\{extractionRulesRef\}/);
   assert.match(page, /className="step-transition-button" onClick=\{\(\) => scrollToRef\(mappingSectionRef\)\}/);
   assert.match(page, /NEXT 04/);
   assert.match(page, /className="step-back-button" onClick=\{\(\) => scrollToRef\(extractionRulesRef\)\}/);
   assert.match(page, /取得項目へ戻る/);
   assert.match(styles, /\.step-transition-button/);
+  assert.match(styles, /\.rule-pane__heading/);
   assert.match(styles, /\.step-back-button/);
 });
 
