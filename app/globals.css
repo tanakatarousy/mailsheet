@@ -2251,14 +2251,27 @@ svg {
 .selection-builder__preview > b { display: block; margin-bottom: 7px; color: #17663d; font-size: 11px; }
 .selection-builder__warning { margin: 0; color: #8a5700; font-size: 10px; }
 
-.step-transition-button {
+.rule-pane__heading {
   display: flex;
-  width: 100%;
-  min-height: 68px;
-  margin-top: 16px;
-  padding: 13px 17px;
+  margin-bottom: 22px;
   align-items: center;
   justify-content: space-between;
+  gap: 14px;
+}
+
+.rule-pane__heading .section-mini-heading {
+  margin-bottom: 0;
+}
+
+.step-transition-button {
+  display: flex;
+  width: auto;
+  min-height: 52px;
+  padding: 9px 13px;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  flex: 0 0 auto;
   border: 0;
   border-radius: 9px;
   background: var(--blue);
@@ -2268,7 +2281,7 @@ svg {
 }
 .step-transition-button span { display: grid; gap: 2px; }
 .step-transition-button small { color: rgba(255, 255, 255, 0.7); font-size: 10px; font-weight: 750; letter-spacing: 0.12em; }
-.step-transition-button strong { font-size: 15px; }
+.step-transition-button strong { font-size: 13px; white-space: nowrap; }
 .step-transition-button:hover { transform: translateY(-1px); box-shadow: 0 13px 28px rgba(11, 29, 145, 0.24); }
 .mapping-section__heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .step-back-button { display: inline-flex; min-height: 36px; padding: 0 12px; align-items: center; gap: 6px; border: 1px solid rgba(11, 29, 145, 0.22); border-radius: 999px; background: #fff; color: var(--blue); font-size: 11px; font-weight: 750; }
@@ -5365,6 +5378,16 @@ svg {
 
   .rule-list-item {
     grid-template-columns: 1fr;
+  }
+
+  .rule-pane__heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .step-transition-button {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .rule-order-actions {
