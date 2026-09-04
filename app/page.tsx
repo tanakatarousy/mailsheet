@@ -23,6 +23,7 @@ import {
   sampleEmail,
   type ExtractionMethod,
   type ExtractionRule,
+  type SafeExtractionLocator,
 } from "@/lib/extraction";
 
 type AppView = "dashboard" | "connections" | "rules" | "history" | "settings" | "guide" | "feedback" | "admin";
@@ -36,6 +37,40 @@ const resolveMappedSheetColumn = (headers: SheetInfo["headers"], mappedValue: un
   if (columnToken && outputHeaders.some((header) => header.column === columnToken)) return columnToken;
   return outputHeaders.find((header) => header.label === value)?.column || "";
 };
+const spreadsheetColumnAt = (zeroBasedIndex: number) => {
+  let value = Math.max(0, zeroBasedIndex) + 1;
+  let column = "";
+  while (value > 0) {
+    value -= 1;
+    column = String.fromCharCode(65 + (value % 26)) + column;
+    value = Math.floor(value / 26);
+  }
+  return column;
+};
+const outputColumnForRuleIndex = (ruleIndex: number) => spreadsheetColumnAt(ruleIndex + 2);
+const locatorSourceLabel = (locator: SafeExtractionLocator) => {
+  if (locator.kind === "label") return locator.innerLabel ? `${locator.label} → ${locator.innerLabel}` : locator.label || "見出し未設定";
+  if (locator.kind === "block") return locator.heading || "見出し未設定";
+  if (locator.kind === "json") return (locator.path || []).join(" → ") || "JSON項目未設定";
+  return locator.question || "質問未設定";
+};
+const locatorBoundaryLabel = (locator: SafeExtractionLocator) => {
+  if (locator.kind === "block") return `見出しの次の行から「${locator.endHeading || "次の見出し"}」の直前まで`;
+  if (locator.kind === "json") return "保存したJSONの同じ項目パス";
+  if (locator.kind === "qa") return "同じ質問の直後にある「回答」の値";
+  if (locator.nextLabel) return `見出しの直後から、次の見出し「${locator.nextLabel}」の直前まで`;
+  if (locator.suffix) return `見出しの直後から、終端「${locator.suffix}」の直前まで`;
+  if (locator.balancedEnd) return "見出しの直後から、対応する括弧の終わりまで";
+  return "見出しの直後から行末まで";
+};
+const locatorValueTypeLabel = (locator: SafeExtractionLocator) => ({
+  text: "文字",
+  number: "数字",
+  money: "金額",
+  date: "日付・日時",
+  email: "メールアドレス",
+  phone: "電話番号",
+}[locator.sampleValueType || "text"]);
 const extractionFieldNeedsSafetyReview = (field: ExtractionRule) => (
   field.method !== "regex" || !extractionLocatorIsSafe(field.locator)
 );
@@ -439,7 +474,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [saved, setSaved] = useState(false);
   const [autoAdd, setAutoAdd] = useState(false);
   const [mappings, setMappings] = useState<Record<number, string>>(
-    Object.fromEntries(starterRules.map((rule, index) => [rule.id, embedded ? `${String.fromCharCode(67 + index)}列` : ""])),
+    Object.fromEntries(starterRules.map((rule, index) => [rule.id, embedded ? outputColumnForRuleIndex(index) : ""])),
   );
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [gmailMessages, setGmailMessages] = useState<GmailMessage[]>([]);
@@ -452,6 +487,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [selectedText, setSelectedText] = useState("");
   const [selectedTextStart, setSelectedTextStart] = useState<number | null>(null);
   const [selectionName, setSelectionName] = useState("");
+  const [selectedDetectedIndexes, setSelectedDetectedIndexes] = useState<number[]>([]);
   const [sheetConnection, setSheetConnection] = useState<{ state: "idle" | "checking" | "connected" | "error"; message: string }>({ state: "idle", message: "" });
   const [recentInputHistory, setRecentInputHistory] = useState<RecentInputHistory>(emptyRecentInputHistory);
   const draggedRuleId = useRef<number | null>(null);
@@ -544,6 +580,10 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const selectedExtraction = selectedRule ? extractValueResult(emailBody, selectedRule, rules) : null;
   const hasMissingResult = results.some((item) => !item.value);
   const detectedFields = useMemo(() => detectFields(emailBody), [emailBody]);
+  const visibleDetectedFields = useMemo(() => detectedFields.slice(0, 12), [detectedFields]);
+  const allVisibleDetectedFieldsSelected = visibleDetectedFields.length > 0
+    && selectedDetectedIndexes.length === visibleDetectedFields.length;
+  useEffect(() => { setSelectedDetectedIndexes([]); }, [emailBody]);
   const ruleHealth = (item: SavedRule) => {
     const missing: string[] = [];
     const unsafeField = item.fields.find(extractionFieldNeedsSafetyReview);
@@ -719,7 +759,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setEmailBody(selected.body);
     setRules(safeFields);
     setSelectedRuleId(safeFields[0]?.id ?? 0);
-    setMappings(Object.fromEntries(safeFields.map((field) => [field.id, ""])));
+    setMappings(Object.fromEntries(safeFields.map((field, index) => [field.id, outputColumnForRuleIndex(index)])));
     setSpreadsheetInput("");
     setSheetName("");
     setSheetInfo(null);
@@ -746,35 +786,52 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     const id = Math.max(0, ...rules.map((rule) => rule.id)) + 1;
     const nextRule: ExtractionRule = { id, name: `項目${id}`, method: "after", start: "項目名：", end: "", pattern: "" };
     setRules((current) => [...current, nextRule]);
-    setMappings((current) => ({ ...current, [id]: sheetInfo?.headers[rules.length + 2]?.column ?? "" }));
+    setMappings((current) => ({ ...current, [id]: sheetInfo?.headers[rules.length + 2]?.column ?? outputColumnForRuleIndex(rules.length) }));
     setSelectedRuleId(id);
     markChanged();
   };
 
-  const addDetectedField = (detected: ReturnType<typeof detectFields>[number]) => {
-    const existing = rules.find((rule) => rule.name === detected.name);
-    if (existing) {
-      setRules((current) => current.map((rule) => rule.id === existing.id ? { ...detected.rule, id: existing.id } : rule));
-      setSelectedRuleId(existing.id);
-    } else {
-      const id = Math.max(0, ...rules.map((rule) => rule.id)) + 1;
-      setRules((current) => [...current, { ...detected.rule, id }]);
-      setMappings((current) => ({ ...current, [id]: "" }));
-      setSelectedRuleId(id);
-    }
+  const addDetectedFields = (items: ReturnType<typeof detectFields>) => {
+    if (!items.length) return;
+    const nextRules = [...rules];
+    const nextMappings = { ...mappings };
+    let nextId = Math.max(0, ...nextRules.map((rule) => rule.id));
+    let lastRuleId = selectedRuleId;
+    items.forEach((detected) => {
+      const existingIndex = nextRules.findIndex((rule) => rule.name === detected.name);
+      if (existingIndex >= 0) {
+        const existingId = nextRules[existingIndex].id;
+        nextRules[existingIndex] = { ...detected.rule, id: existingId };
+        nextMappings[existingId] ||= sheetInfo?.headers[existingIndex + 2]?.column ?? outputColumnForRuleIndex(existingIndex);
+        lastRuleId = existingId;
+        return;
+      }
+      nextId += 1;
+      nextRules.push({ ...detected.rule, id: nextId });
+      const ruleIndex = nextRules.length - 1;
+      nextMappings[nextId] = sheetInfo?.headers[ruleIndex + 2]?.column ?? outputColumnForRuleIndex(ruleIndex);
+      lastRuleId = nextId;
+    });
+    setRules(nextRules);
+    setMappings(nextMappings);
+    setSelectedRuleId(lastRuleId);
+    setSelectedDetectedIndexes([]);
     markChanged();
+    setNotice({ kind: "success", text: `${items.length}項目を追加し、C列以降へ順番に割り当てました。` });
     scrollToRef(extractionRulesRef);
   };
 
-  const addAllDetectedFields = () => {
-    if (!detectedFields.length) return;
-    const next = detectedFields.map((item, index) => ({ ...item.rule, id: index + 1 }));
-    setRules(next);
-    setSelectedRuleId(next[0].id);
-    setMappings(Object.fromEntries(next.map((rule) => [rule.id, ""])));
-    markChanged();
-    setNotice({ kind: "success", text: `${next.length}項目を候補から追加しました。不要な項目は削除できます。` });
-    scrollToRef(extractionRulesRef);
+  const addSelectedDetectedFields = () => {
+    const selectedItems = selectedDetectedIndexes
+      .map((index) => visibleDetectedFields[index])
+      .filter((item): item is ReturnType<typeof detectFields>[number] => Boolean(item));
+    addDetectedFields(selectedItems);
+  };
+
+  const toggleAllDetectedFields = () => {
+    setSelectedDetectedIndexes(allVisibleDetectedFieldsSelected
+      ? []
+      : visibleDetectedFields.map((_, index) => index));
   };
 
   const captureMailText = ({ text, start }: { text: string; start: number }) => {
@@ -800,7 +857,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       return;
     }
     setRules((current) => [...current, generated.rule]);
-    setMappings((current) => ({ ...current, [id]: "" }));
+    setMappings((current) => ({ ...current, [id]: sheetInfo?.headers[rules.length + 2]?.column ?? outputColumnForRuleIndex(rules.length) }));
     setSelectedRuleId(id);
     setSelectedText("");
     setSelectedTextStart(null);
@@ -1160,11 +1217,13 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     }
   };
 
-  const mappingOptions = sheetInfo?.headers.length
-    ? sheetInfo.headers.slice(2).map((header) => ({ value: header.column, label: `${header.column}列：${header.label}` }))
-    : embedded
-      ? ["C", "D", "E", "F", "G", "H"].map((column) => ({ value: `${column}列`, label: `${column}列` }))
-      : [{ value: "", label: "見出し取得後に選択" }];
+  const expectedOutputColumns = Array.from({ length: Math.max(12, rules.length) }, (_, index) => outputColumnForRuleIndex(index));
+  const connectedMappingOptions = sheetInfo?.headers.slice(2).map((header) => ({ value: header.column, label: `${header.column}列：${header.label}` })) ?? [];
+  const connectedColumns = new Set(connectedMappingOptions.map((option) => option.value));
+  const mappingOptions = [
+    ...connectedMappingOptions,
+    ...expectedOutputColumns.filter((column) => !connectedColumns.has(column)).map((column) => ({ value: column, label: `${column}列` })),
+  ];
 
   const hasSearchCondition = conditionMode === "sender" ? Boolean(sender.trim()) : Boolean(subject.trim());
   const mappingsComplete = sheetMappingsAreReady(sheetInfo, mappings);
@@ -1340,8 +1399,9 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
             </div>
           ) : null}
           <div className="detected-fields">
-            <div className="detected-fields__heading"><div><strong>本文から見つかった項目</strong><small>クリックすると取得項目へ追加されます</small></div><button type="button" onClick={addAllDetectedFields} disabled={!detectedFields.length}>すべて追加</button></div>
-            {detectedFields.length ? <div className="detected-fields__list">{detectedFields.slice(0, 12).map((item, index) => <button type="button" key={`${item.name}-${index}`} onClick={() => addDetectedField(item)}><span>{item.name}</span><strong>{item.value}</strong><i>＋</i></button>)}</div> : <p className="detected-fields__empty">安全に自動判定できる項目がありません。本文で取得したい値だけを選択してください。</p>}
+            <div className="detected-fields__heading"><div><strong>本文から見つかった項目</strong><small>必要な項目を2件以上でも選べます</small></div><div className="detected-fields__actions"><button type="button" className="is-secondary" onClick={toggleAllDetectedFields} disabled={!visibleDetectedFields.length}>{allVisibleDetectedFieldsSelected ? "選択解除" : "すべて選択"}</button></div></div>
+            {visibleDetectedFields.length ? <div className="detected-fields__selection-bar"><span>{selectedDetectedIndexes.length ? `${selectedDetectedIndexes.length}件選択中` : "追加する項目をタップしてください"}</span><button type="button" onClick={addSelectedDetectedFields} disabled={!selectedDetectedIndexes.length}>{selectedDetectedIndexes.length ? `選択した${selectedDetectedIndexes.length}件を追加` : "項目を選択してください"}</button></div> : null}
+            {visibleDetectedFields.length ? <div className="detected-fields__list">{visibleDetectedFields.map((item, index) => { const selected = selectedDetectedIndexes.includes(index); return <button type="button" key={`${item.name}-${index}`} className={selected ? "is-selected" : undefined} aria-pressed={selected} onClick={() => setSelectedDetectedIndexes((current) => current.includes(index) ? current.filter((value) => value !== index) : [...current, index])}><span>{item.name}</span><strong>{item.value}</strong><i>{selected ? "✓" : "＋"}</i></button>; })}</div> : <p className="detected-fields__empty">安全に自動判定できる項目がありません。本文で取得したい値だけを選択してください。</p>}
           </div>
           <details className="email-edit-details">
             <summary>{live ? "サンプル本文を手動で調整" : "サンプルメールを編集"}</summary>
@@ -1376,7 +1436,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
 
           {selectedRule ? (
             <div className="rule-form">
-              <label><span>抽出項目名（自由入力）</span><input value={selectedRule.name} onChange={(event) => updateRule({ name: event.target.value })} placeholder="例：注文番号、予約日時、会社名、金額" /></label>
+              <label><span>取得項目名 <small>シートで使う名前</small></span><input value={selectedRule.name} onChange={(event) => updateRule({ name: event.target.value })} placeholder="例：注文番号、予約日時、会社名、金額" /></label>
               {selectedRule.method !== "regex" ? <label><span>値の種類 / 範囲の決め方</span><select value={selectedRule.method} onChange={(event) => {
                 const method = event.target.value as ExtractionMethod;
                 const resetAnchor = selectedRule.method === "between" || selectedRule.method === "regex";
@@ -1390,9 +1450,11 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                 </div>
               ) : null}
               {selectedRule.method !== "regex" ? <p className="rule-safety-note">この詳細設定はプレビュー確認用です。新着メールの自動転記に使うには、左の本文で取得したい値だけを選び、この項目を安全な自動設定へ置き換えてください。</p> : null}
-              {selectedRule.method === "regex" && selectedRule.locator?.kind === "label" && !selectedRule.locator.innerLabel ? <label><span>この項目に使われる別の見出し <small>任意・読点区切り</small></span><input value={(selectedRule.aliases || []).join("、")} onChange={(event) => updateRule({ aliases: event.target.value.split(/[、,]/).map((value) => value.trim().slice(0, 100)).filter(Boolean).slice(0, 10) })} placeholder={`例：${selectedRule.name === "氏名" ? "お名前、応募者名" : `${selectedRule.name}の別表記`}`} /></label> : null}
+              {selectedRule.method === "regex" && selectedRule.locator ? <div className="automatic-rule-source"><span>メール本文で探す見出し</span><strong>{locatorSourceLabel(selectedRule.locator)}</strong><small>取得項目名を変更しても、本文ではこの見出しを探します。</small></div> : null}
+              {selectedRule.method === "regex" && selectedRule.locator?.kind === "label" && !selectedRule.locator.innerLabel ? <label><span>メール本文の別見出し <small>任意・読点区切り</small></span><input value={(selectedRule.aliases || []).join("、")} onChange={(event) => updateRule({ aliases: event.target.value.split(/[、,]/).map((value) => value.trim().slice(0, 100)).filter(Boolean).slice(0, 10) })} placeholder={`例：${selectedRule.name === "氏名" ? "お名前、応募者名" : `${selectedRule.locator.label || selectedRule.name}の別表記`}`} /></label> : null}
               <div className="live-result"><span>プレビュー</span><strong>{selectedExtraction?.value || "抽出できませんでした"}</strong><i className={selectedExtraction?.status === "ok" ? "is-success" : "is-warning"}>{selectedExtraction?.status === "ok" ? "✓" : "!"}</i>{selectedExtraction?.status !== "ok" ? <small className="live-result__reason">{selectedExtraction?.reason}</small> : null}</div>
-              {selectedRule.method === "regex" ? <p className="automatic-rule-note">本文で選んだ値の位置から安全に自動設定済みです。値や空白・改行が変わっても、同じ見出しと次の見出しの間だけを取得します。見出し構造が変わった場合や候補が複数ある場合は、推測せず「要確認」にします。</p> : null}
+              {selectedRule.method === "regex" && selectedRule.locator ? <details className="automatic-rule-details"><summary>取得条件と誤取得防止を確認</summary><dl><div><dt>取得する範囲</dt><dd>{locatorBoundaryLabel(selectedRule.locator)}</dd></div><div><dt>値の種類</dt><dd>{locatorValueTypeLabel(selectedRule.locator)}</dd></div><div><dt>安全判定</dt><dd>見出しが複数ある、周囲の項目構造が変わる、値の形式が合わない場合は転記せず「要確認」</dd></div></dl><p>入力文字を正規表現として実行していません。固定の構造判定で見出しを探し、正規化後の文字列を完全一致で照合します。</p></details> : null}
+              {selectedRule.method === "regex" ? <p className="automatic-rule-note">値が変わっても同じ見出しと境界から取得します。ただし、すべての別形式を自動判断できる保証はありません。見出し候補が複数ある場合は、推測せず「要確認」に止めます。</p> : null}
             </div>
           ) : null}
         </div>

@@ -830,7 +830,7 @@ test("ships the complete LP and interactive app prototype", async () => {
     "Gmailに届いたら",
     "対象メールを決める",
     "取得項目を自由に指定",
-    "抽出項目名（自由入力）",
+    "取得項目名",
     "新規作成",
     "用途別の例から始めて",
     "問い合わせ",
@@ -1110,6 +1110,45 @@ test("saves current sheet mappings when enabling a rule and guides the next acti
   assert.match(worker, /resolveMappedSheetColumn\(outputHeaders, mappedHeader\)/);
   assert.match(worker, /resolveMappedSheetColumn\(outputHeaders, rule\.mappings\[String\(item\.field\.id\)\]\) === header\.column/);
   assert.doesNotMatch(worker, /rule\.mappings\[String\(item\.field\.id\)\] === header\.label/);
+});
+
+test("selects detected fields in a batch and assigns output columns from C", async () => {
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  const styles = await readFile(path.join(root, "app", "globals.css"), "utf8");
+  assert.match(page, /const \[selectedDetectedIndexes, setSelectedDetectedIndexes\] = useState<number\[]>\(\[]\)/);
+  assert.match(page, /必要な項目を2件以上でも選べます/);
+  assert.match(page, /aria-pressed=\{selected\}/);
+  assert.match(page, /const addSelectedDetectedFields = \(\) =>/);
+  assert.match(page, /const toggleAllDetectedFields = \(\) =>/);
+  assert.match(page, /選択した\$\{selectedDetectedIndexes\.length\}件を追加/);
+  assert.doesNotMatch(page, />すべて追加</);
+  assert.match(page, /setSelectedDetectedIndexes\(\[]\)/);
+  assert.match(page, /const outputColumnForRuleIndex = \(ruleIndex: number\) => spreadsheetColumnAt\(ruleIndex \+ 2\)/);
+  assert.match(page, /nextMappings\[nextId\] = sheetInfo\?\.headers\[ruleIndex \+ 2\]\?\.column \?\? outputColumnForRuleIndex\(ruleIndex\)/);
+  assert.match(page, /C列以降へ順番に割り当てました/);
+  assert.match(styles, /\.detected-fields__list button\.is-selected/);
+  assert.match(styles, /\.detected-fields__selection-bar/);
+});
+
+test("shows the safe extraction decision and fails closed on changed mail structures", async () => {
+  const { detectFields, extractValueResult } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const page = await readFile(path.join(root, "app", "page.tsx"), "utf8");
+  const sample = "氏名：池田 隼人\n性別：男性\n郵便番号：140-0001\n住所：東京都品川区";
+  const gender = detectFields(sample).find((item) => item.name === "性別");
+  assert.ok(gender);
+
+  const changed = "氏名：山田 花子\n性別：女性\n郵便番号：150-0001\n住所：東京都渋谷区";
+  assert.equal(extractValueResult(changed, gender.rule).status, "ok");
+  assert.equal(extractValueResult(changed, gender.rule).value, "女性");
+  assert.equal(extractValueResult("氏名：山田 花子\nジェンダー：女性\n郵便番号：150-0001\n住所：東京都渋谷区", { ...gender.rule, aliases: ["ジェンダー"] }).value, "女性");
+  assert.equal(extractValueResult("性別：男性\n郵便番号：140-0001\n性別：女性\n郵便番号：150-0001", gender.rule).status, "ambiguous");
+  assert.equal(extractValueResult("氏名：山田 花子\n性別：入力してください\n郵便番号：150-0001\n住所：東京都渋谷区", gender.rule).status, "invalid");
+
+  assert.match(page, /取得項目名 <small>シートで使う名前<\/small>/);
+  assert.match(page, /メール本文で探す見出し/);
+  assert.match(page, /メール本文の別見出し/);
+  assert.match(page, /入力文字を正規表現として実行していません/);
+  assert.match(page, /取得条件と誤取得防止を確認/);
 });
 
 test("supports ten saved rules, three active rules, and traceable automatic processing", async () => {
