@@ -1209,7 +1209,7 @@ test("atomically rejects duplicate rule creates and updates", async () => {
   }
 });
 
-test("accepts one test write and blocks the same Gmail delivery in later rule runs", async () => {
+test("deduplicates one test request without consuming the Gmail delivery", async () => {
   const { default: worker, processSavedRuleForTest } = await import(path.join(root, "worker", "index.js"));
   const { env, sqlite } = await createWorkerTestEnvironment();
   const sheets = installSheetsFetchMock();
@@ -1230,19 +1230,20 @@ test("accepts one test write and blocks the same Gmail delivery in later rule ru
     body: JSON.stringify({ ...payload, ...overrides }),
   });
   try {
-    const gmailResponses = await Promise.all([
-      worker.fetch(request(), env),
-      worker.fetch(request({ idempotencyKey: "request_id_abcdefghij" }), env),
-    ]);
-    const gmailResults = await Promise.all(gmailResponses.map((response) => response.json()));
-    assert.equal(gmailResults.filter((result) => result.skipped === false).length, 1);
-    assert.equal(gmailResults.filter((result) => result.skipped === true).length, 1);
-    assert.equal(gmailResults.find((result) => result.skipped)?.duplicateReason, "gmail_message_already_accepted");
+    const sameRequestResponses = await Promise.all([worker.fetch(request(), env), worker.fetch(request(), env)]);
+    const sameRequestResults = await Promise.all(sameRequestResponses.map((response) => response.json()));
+    assert.equal(sameRequestResults.filter((result) => result.skipped === false).length, 1);
+    assert.equal(sameRequestResults.filter((result) => result.skipped === true).length, 1);
+    assert.equal(sameRequestResults.find((result) => result.skipped)?.duplicateReason, "request_already_accepted");
     assert.equal(sheets.appendCalls, 1);
 
+    const intentionalSecondTest = await worker.fetch(request({ idempotencyKey: "request_id_abcdefghij" }), env);
+    assert.equal((await intentionalSecondTest.json()).skipped, false);
+    assert.equal(sheets.appendCalls, 2);
+
     const laterRun = await processSavedRuleForTest(env, "test-user", safeJsonRule(), { messages: [gmailTestMessage()] });
-    assert.deepEqual(laterRun, { success: 0, review: 0, skipped: 1, searched: 1 });
-    assert.equal(sheets.appendCalls, 1);
+    assert.deepEqual(laterRun, { success: 1, review: 0, skipped: 0, searched: 1 });
+    assert.equal(sheets.appendCalls, 3);
 
     const sampleOnly = { gmailMessageId: "", idempotencyKey: "sample_request_123456", values: ["サンプル値"] };
     const sampleResponses = await Promise.all([
@@ -1253,7 +1254,7 @@ test("accepts one test write and blocks the same Gmail delivery in later rule ru
     assert.equal(sampleResults.filter((result) => result.skipped === false).length, 1);
     assert.equal(sampleResults.filter((result) => result.skipped === true).length, 1);
     assert.equal(sampleResults.find((result) => result.skipped)?.duplicateReason, "request_already_accepted");
-    assert.equal(sheets.appendCalls, 2);
+    assert.equal(sheets.appendCalls, 4);
   } finally {
     sheets.restore();
     sqlite.close();
@@ -1413,12 +1414,14 @@ test("ships Gmail push webhook, watch registration and renewal routes", async ()
   assert.match(page, /保存済みルール管理/);
   assert.match(page, /差出人（From）で探す/);
   assert.match(page, /件名で探す/);
-  assert.match(page, /一致メールを手動で転記/);
+  assert.doesNotMatch(page, /一致メールを手動で転記/);
   assert.match(page, /writeInFlightRef/);
-  assert.match(page, /runInFlightRef/);
+  assert.doesNotMatch(page, /runInFlightRef/);
   assert.match(page, /saveInFlightRef/);
   assert.match(page, /gmailMessageId: emailMeta\.messageId/);
   assert.match(page, /idempotencyKey: testRequestRef\.current\.idempotencyKey/);
+  assert.match(page, /testRequestRef\.current = \{ signature: "", idempotencyKey: "" \}/);
+  assert.match(page, /sheetWriteResult/);
   assert.match(page, /重複行は追加しませんでした/);
   assert.match(page, /入力が終わると自動確認します/);
   assert.doesNotMatch(page, /正規表現を直接入力/);
