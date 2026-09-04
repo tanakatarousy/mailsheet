@@ -678,13 +678,13 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     if (item.fields.some((field) => !item.mappings[String(field.id)])) missing.push("出力列の割り当て");
     if (unsafeField) return { tone: "error", label: "設定確認", message: `「${unsafeField.name}」の取得位置を確認してください。確認が終わるまで誤転記を防ぐため処理を停止します。` };
     if (!item.active) return { tone: "stopped", label: "停止中", message: "新着メールの自動転記がOFFです。「自動転記ON」を押すと稼働します。" };
-    if (!auth?.gmailPushConfigured) return { tone: "error", label: "受信通知未設定", message: "Gmail受信通知が未設定のため、自動転記は開始されません。" };
-    if (!auth?.gmailWatchActive) return { tone: "error", label: "受信監視停止", message: "Gmailの新着監視が止まっています。「監視開始」を押してください。" };
+    if (!auth?.gmailPushConfigured) return { tone: "error", label: "自動転記の準備中", message: "現在、自動転記を開始できません。しばらくしてからもう一度お試しください。" };
+    if (!auth?.gmailWatchActive) return { tone: "error", label: "自動転記停止中", message: "新着メールの自動転記が停止しています。「自動転記を再開」を押してください。" };
     if (missing.length) return { tone: "error", label: "設定不足", message: `${missing.join("・")}が未設定のため、このルールは実行されません。` };
     if (item.lastStatus === "review" || item.lastStatus === "failed") return { tone: "error", label: "要確認", message: item.lastError || "直近の処理でエラーが発生しました。Historyを確認してください。" };
     if (item.lastStatus === "success") return { tone: "success", label: "正常", message: `直近の転記に成功しました（${new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(item.lastProcessedAt))}）。` };
-    if (!auth.lastGmailNotificationAt) return { tone: "ready", label: "通知待ち", message: "Gmail監視は開始済みです。Cloudflareへ最初の受信通知が届くのを待っています。" };
-    return { tone: "ready", label: "待機中", message: `Gmail通知を受信済みです（最終 ${new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(auth.lastGmailNotificationAt))}）。条件に一致する新着メールを待っています。` };
+    if (!auth.lastGmailNotificationAt) return { tone: "ready", label: "待機中", message: "設定は完了しています。条件に一致する新着メールを待っています。" };
+    return { tone: "ready", label: "待機中", message: `自動転記は正常に動作しています（最終確認 ${new Intl.DateTimeFormat("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(auth.lastGmailNotificationAt))}）。条件に一致する新着メールを待っています。` };
   };
 
   const applySavedRule = useCallback((item: SavedRule, preferredFieldId?: number, prepareEdit = false) => {
@@ -805,7 +805,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     postJson<{ ok: true; expiration: number }>("/api/gmail/watch", {})
       .then((response) => {
         setAuth((current) => current ? { ...current, gmailWatchActive: true, gmailWatchExpiresAt: response.expiration } : current);
-        setNotice({ kind: "success", text: "停止していたGmail受信監視を再開しました。新着メールを待機しています。" });
+        setNotice({ kind: "success", text: "自動転記を再開しました。条件に一致する新着メールを待っています。" });
         onDataChanged?.();
       })
       .catch((error: unknown) => {
@@ -1146,7 +1146,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     try {
       const response = await postJson<{ ok: true; expiration: number }>("/api/gmail/watch", {});
       setAuth((current) => current ? { ...current, gmailWatchActive: true, gmailWatchExpiresAt: response.expiration } : current);
-      setNotice({ kind: "success", text: "Gmailの受信通知を開始しました。自動転記ONの保存ルールが新着メールの受信時に動きます。" });
+      setNotice({ kind: "success", text: "自動転記を開始しました。保存済みの条件に一致する新着メールを転記します。" });
     } catch (error) {
       setNotice({ kind: "warning", text: errorText(error) });
     } finally {
@@ -1760,7 +1760,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
               <button type="button" className="button button--outline" onClick={() => saveRule()} disabled={Boolean(busy)}>{busy === "save" ? "保存中…" : ruleId ? "このルールに上書き保存" : "新しいルールとして保存"}</button>
               {!live ? <button type="button" className="button button--blue" onClick={() => setSaved(true)}>テスト結果を保存</button> : null}
             </div>
-            {live ? <div className={auth?.gmailWatchActive && !autoAdd ? "automation-note is-warning" : "automation-note"}><p>{auth?.gmailWatchActive && autoAdd ? "受信通知と新着メールの自動転記は有効です。条件に一致する新着メールだけを転記します。" : auth?.gmailWatchActive ? "受信通知は有効です。自動転記する場合は、画面上部の「新着メールを自動転記」をONにしてルールを保存してください。" : auth?.gmailPushConfigured ? "自動転記を使う場合は、Google接続で受信通知を開始してください。" : "Google CloudでPub/Subを設定すると、新着メールを自動転記できます。"}</p>{auth?.gmailPushConfigured && !auth.gmailWatchActive ? <button type="button" onClick={activateGmailWatch} disabled={Boolean(busy)}>受信通知を開始</button> : null}</div> : null}
+            {live ? <div className={auth?.gmailWatchActive && !autoAdd ? "automation-note is-warning" : "automation-note"}><p>{auth?.gmailWatchActive && autoAdd ? "新着メールの自動転記は有効です。条件に一致するメールだけを転記します。" : auth?.gmailWatchActive ? "自動転記を利用する場合は、画面上部の「新着メールを自動転記」をONにしてルールを保存してください。" : auth?.gmailPushConfigured ? "自動転記が停止しています。下のボタンから再開してください。" : "現在、自動転記の準備中です。"}</p>{auth?.gmailPushConfigured && !auth.gmailWatchActive ? <button type="button" onClick={activateGmailWatch} disabled={Boolean(busy)}>自動転記を再開</button> : null}</div> : null}
           </div>
         ) : null}
       </section>
@@ -1793,7 +1793,7 @@ function HistoryTable({ rows }: { rows?: ApiHistoryRow[] }) {
               <td data-label="状態"><span className={row.status === "成功" ? "history-status is-success" : row.status === "失敗" ? "history-status is-failed" : row.status === "通知受信" ? "history-status is-info" : row.status === "転記なし" ? "history-status is-skipped" : "history-status is-warning"}>{row.status}</span></td>
             </tr>
           ))}
-          {data.length === 0 ? <tr><td colSpan={5} className="history-empty">まだ処理履歴はありません。Gmailの受信通知、テスト書き込み、手動転記の結果がここに表示されます。</td></tr> : null}
+          {data.length === 0 ? <tr><td colSpan={5} className="history-empty">まだ転記履歴はありません。メールが転記されると、結果がここに表示されます。</td></tr> : null}
         </tbody>
       </table>
     </div>
@@ -2067,7 +2067,7 @@ const privacySections = [
   { title: "1. 取得する情報", body: <>本サービスは、Google OAuth 2.0による認証に伴い、Googleアカウントのメールアドレス、認証に必要なアクセストークンおよびリフレッシュトークンを取得します。また、利用者が設定した対象メール条件、抽出ルール、Google Sheetsの列対応、処理日時・成否などの履歴を取り扱います。公開ページでは、アクセス解析のため匿名の閲覧者ID、閲覧ページ、参照元ドメイン、端末種別、閲覧日時を取得します。IPアドレスはアクセス履歴として保存しません。要望フォームを送信した場合は、入力内容と任意の連絡先を取得します。</> },
   { title: "2. Gmailデータの取り扱い", body: <>利用者が指定した条件に合うメールの検索、抽出ルールの作成および実行に必要な範囲で、Gmailのメール本文・送信元・件名等を読み取ります。Gmailは読取専用権限を使用します。現在の仕様では、メール本文および抽出した値を継続保存せず、プレビューと処理のために一時的に利用します。</> },
   { title: "3. Google Sheetsデータの取り扱い", body: <>利用者が指定したSpreadsheetとSheetの見出しを読み取り、利用者が設定・確認した列へ抽出結果を書き込むために使用します。本サービスが利用者の操作と無関係なSpreadsheetへ書き込むことはありません。</> },
-  { title: "4. 利用目的", body: <>取得した情報は、Googleアカウントとの接続、対象メールの検索、情報の抽出、Google Sheetsへの転記、処理履歴の表示、不具合調査および本サービスの提供・改善のために利用します。広告配信や取得データの販売には利用しません。</> },
+  { title: "4. 利用目的", body: <>取得した情報は、Googleアカウントとの接続、対象メールの検索、情報の抽出、Google Sheetsへの転記、転記履歴の表示、不具合調査および本サービスの提供・改善のために利用します。広告配信や取得データの販売には利用しません。</> },
   { title: "5. 第三者提供・外部サービス", body: <>法令に基づく場合を除き、利用者の同意なく個人情報を第三者へ販売または提供しません。本サービスの提供に必要な範囲でGoogle APIおよびホスティング等の事業者を利用する場合があります。Google APIから受領した情報の利用および他のアプリへの転送は、Google API Services User Data Policy（Limited Use要件を含みます）に従います。</> },
   { title: "6. 保存期間と削除", body: <>認証情報はGoogle接続の解除または本サービスの利用終了まで保持し、不要となった情報は合理的な期間内に削除します。利用者はアプリ内の設定からGoogle接続を解除できます。また、Googleアカウント側からもアクセス権を取り消せます。</> },
   { title: "7. 安全管理", body: <>認証トークンの暗号化、アクセス制限その他の合理的な安全管理措置を講じます。ただし、インターネット上の通信または保存について完全な安全性を保証するものではありません。</> },
@@ -2079,7 +2079,7 @@ const termsSections = [
   { title: "1. 適用", body: <>本規約は、MAILSHEET（以下「本サービス」）の利用条件を定めるものです。利用者は、本規約およびプライバシーポリシーに同意したうえで本サービスを利用します。</> },
   { title: "2. サービス内容", body: <>本サービスは、利用者が指定したGmailの定型メールから情報を抽出し、指定されたGoogle Sheetsへ転記する機能を提供します。現在は検証段階の先行版であり、提供する機能、利用上限、料金および仕様を変更する場合があります。</> },
   { title: "3. Googleアカウントとの接続", body: <>利用者は自身が正当に利用するGoogleアカウントを接続し、Googleの同意画面で必要な権限を確認して許可するものとします。接続はいつでも解除できます。Googleのパスワードを本サービスへ入力する必要はありません。</> },
-  { title: "4. 利用者の責任", body: <>利用者は、対象メール、抽出結果および転記先を自ら確認し、必要な権限を持つデータのみを処理するものとします。重要な業務で利用する場合は、処理履歴と転記結果を確認し、必要に応じて元データを保管してください。</> },
+  { title: "4. 利用者の責任", body: <>利用者は、対象メール、抽出結果および転記先を自ら確認し、必要な権限を持つデータのみを処理するものとします。重要な業務で利用する場合は、転記履歴と転記結果を確認し、必要に応じて元データを保管してください。</> },
   { title: "5. 禁止事項", body: <>法令または第三者の権利を侵害する行為、不正アクセス、他人のアカウントの利用、サービスへ過度な負荷をかける行為、サービスの運営を妨害する行為、その他運営者が不適切と判断する行為を禁止します。</> },
   { title: "6. 利用停止・変更", body: <>保守、障害、外部サービスの仕様変更、セキュリティ上の必要その他やむを得ない事情により、本サービスの全部または一部を停止・変更することがあります。禁止事項への違反がある場合は、利用を停止できるものとします。</> },
   { title: "7. 保証および免責", body: <>本サービスは抽出結果または転記結果の完全性・正確性、特定目的への適合性、継続的な稼働を保証しません。運営者の故意または重過失がある場合を除き、本サービスの利用により生じた間接損害、逸失利益またはデータ損失について責任を負いません。</> },
@@ -2222,7 +2222,7 @@ function TesterFeedback() {
           <div className="tester-feedback-form__heading"><small>POST TYPE</small><h2>投稿する内容を選択</h2><p>選んだ内容に合わせて入力欄が変わります。原因や詳しい操作が分からなくても送信できます。</p></div>
           <div className="tester-feedback-tabs" role="tablist" aria-label="投稿内容の種類">{testerFeedbackTemplates.map((item) => <button type="button" role="tab" aria-selected={form.template === item.id} className={form.template === item.id ? "is-active" : ""} key={item.id} onClick={() => { setForm((current) => ({ ...current, template: item.id, rating: "" })); setMessage(""); setState("idle"); }}><span>{item.number}</span><strong>{item.label}</strong><small>{item.description}</small></button>)}</div>
           <div className="tester-feedback-template-heading"><span>{template.number}</span><div><small>選択中</small><h3>{template.label}</h3></div></div>
-          <label><span>どの画面についてですか？ <small>任意</small></span><select value={form.page} onChange={(event) => setForm((current) => ({ ...current, page: event.target.value }))}><option>Google接続</option><option>転記ルール</option><option>処理履歴</option><option>設定</option><option>使い方ガイド</option><option>ログイン</option><option>アプリ全体</option><option>その他</option></select></label>
+          <label><span>どの画面についてですか？ <small>任意</small></span><select value={form.page} onChange={(event) => setForm((current) => ({ ...current, page: event.target.value }))}><option>Google接続</option><option>転記ルール</option><option>転記履歴</option><option>設定</option><option>使い方ガイド</option><option>ログイン</option><option>アプリ全体</option><option>その他</option></select></label>
           {form.template === "survey" ? <fieldset className="tester-feedback-rating"><legend>全体的な使いやすさ <small>任意</small></legend><div>{[1, 2, 3, 4, 5].map((score) => <button type="button" key={score} className={form.rating === String(score) ? "is-active" : ""} aria-pressed={form.rating === String(score)} onClick={() => setForm((current) => ({ ...current, rating: String(score) }))}><strong>{score}</strong><span>{score === 1 ? "使いにくい" : score === 5 ? "使いやすい" : ""}</span></button>)}</div></fieldset> : null}
           <label><span>{template.detailsLabel} <b>必須</b></span><textarea value={form.details} onChange={(event) => setForm((current) => ({ ...current, details: event.target.value }))} placeholder={template.detailsPlaceholder} required minLength={5} rows={5} /></label>
           <label><span>{template.operationLabel} <small>任意</small></span><textarea value={form.operation} onChange={(event) => setForm((current) => ({ ...current, operation: event.target.value }))} placeholder={template.operationPlaceholder} rows={3} /></label>
@@ -2343,15 +2343,15 @@ function GettingStartedGuide({ auth, onNavigate }: { auth: AuthStatus | null; on
           <div className="guide-step__body">
             <div className="guide-mode-grid"><section className="is-auto"><span>今後の受信を自動化</span><h3>新着メールを自動転記 ON</h3><p>ONでルールを保存した後、新しく届いた条件一致メールを受信のたびに転記します。ONにする前の過去メールは自動転記しません。</p><strong>保存できるルールは10件／ONは3件まで</strong></section></div>
             <div className="guide-important"><Icon name="check" size={22} /><div><strong>「自動追加ON」の意味は、これです。</strong><p>名称を「新着メールを自動転記 ON」に変更しました。入力候補を自動追加する機能ではありません。新しいメールを受信したときに、保存ルールを自動実行する設定です。</p></div></div>
-            <div className="guide-finish-actions"><button type="button" className="button button--blue" onClick={() => onNavigate("rules")}>転記ルールを作る <Icon name="arrow" size={16} /></button><button type="button" className="button button--outline" onClick={() => onNavigate("history")}>処理履歴を見る</button></div>
+            <div className="guide-finish-actions"><button type="button" className="button button--blue" onClick={() => onNavigate("rules")}>転記ルールを作る <Icon name="arrow" size={16} /></button><button type="button" className="button button--outline" onClick={() => onNavigate("history")}>転記履歴を見る</button></div>
           </div>
         </article>
       </div>
 
       <section className="guide-troubleshooting">
         <div><small>WHEN SOMETHING GOES WRONG</small><h2>転記されないときは</h2></div>
-        <ol><li><strong>処理履歴を開く</strong><span>「成功」「転記なし」「要確認」「失敗」と理由を確認します。</span></li><li><strong>受信日時を確認</strong><span>自動転記をONにして保存した後の新着メールが対象です。</span></li><li><strong>ルールを開く</strong><span>差出人・件名、抽出結果、Spreadsheetの接続、出力列を順番に確認します。</span></li></ol>
-        <button type="button" className="button button--outline button--small" onClick={() => onNavigate("history")}>処理履歴へ <Icon name="arrow" size={16} /></button>
+        <ol><li><strong>転記履歴を開く</strong><span>「成功」「転記なし」「要確認」「失敗」と理由を確認します。</span></li><li><strong>受信日時を確認</strong><span>自動転記をONにして保存した後の新着メールが対象です。</span></li><li><strong>ルールを開く</strong><span>差出人・件名、抽出結果、Spreadsheetの接続、出力列を順番に確認します。</span></li></ol>
+        <button type="button" className="button button--outline button--small" onClick={() => onNavigate("history")}>転記履歴へ <Icon name="arrow" size={16} /></button>
       </section>
     </section>
   );
@@ -2538,7 +2538,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
     { id: "dashboard", label: "ホーム", icon: "dashboard" },
     { id: "connections", label: "Google接続", icon: "link" },
     { id: "rules", label: "転記ルール", icon: "sheet" },
-    { id: "history", label: "処理履歴", icon: "history" },
+    { id: "history", label: "転記履歴", icon: "history" },
     { id: "settings", label: "設定", icon: "settings" },
     { id: "guide", label: "使い方ガイド", icon: "guide" },
     { id: "feedback", label: "フィードバック", icon: "feedback" },
@@ -2683,7 +2683,7 @@ function AppShell({ onBack }: { onBack: () => void }) {
           ) : null}
 
           {view === "history" ? (
-            <section className="app-view history-view"><div className="app-view-heading"><div><span>HISTORY</span><h1>処理履歴</h1><p>実際のテスト書込・同期結果をメール単位で確認できます。</p></div><button type="button" className="button button--outline button--small" onClick={refreshData}>再読み込み</button></div><div className="app-panel"><HistoryTable rows={history} /></div></section>
+            <section className="app-view history-view"><div className="app-view-heading"><div><span>HISTORY</span><h1>転記履歴</h1><p>メールからスプレッドシートへ転記した結果を確認できます。</p></div><button type="button" className="button button--outline button--small" onClick={refreshData}>再読み込み</button></div><div className="app-panel"><HistoryTable rows={history} /></div></section>
           ) : null}
 
           {view === "settings" ? (
