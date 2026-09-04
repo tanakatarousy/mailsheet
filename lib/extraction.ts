@@ -6,9 +6,10 @@ export type ExtractionMethod =
   | "date"
   | "email"
   | "phone"
+  | "source"
   | "regex";
 
-export type EditableExtractionMethod = Exclude<ExtractionMethod, "between" | "regex"> | "boolean";
+export type EditableExtractionMethod = Exclude<ExtractionMethod, "between" | "regex" | "source"> | "boolean";
 
 export type ExtractionRule = {
   id: number;
@@ -17,6 +18,7 @@ export type ExtractionRule = {
   start: string;
   end: string;
   pattern: string;
+  sourceField?: "subject" | "from" | "date" | "receivedAt" | "body";
   aliases?: string[];
   anchorConfirmed?: boolean;
   locator?: SafeExtractionLocator;
@@ -999,12 +1001,13 @@ export function extractValue(body: string, rule: ExtractionRule, allRules: Extra
 }
 
 export const methodLabels: Record<ExtractionMethod, string> = {
-  after: "文字（見出しの後ろ）",
-  number: "数字（見出しの後ろ）",
-  money: "金額（見出しの後ろ）",
-  date: "日付（見出しの後ろ）",
-  email: "メールアドレス（見出しの後ろ）",
-  phone: "電話番号（見出しの後ろ）",
+  after: "文字",
+  number: "数字",
+  money: "金額",
+  date: "日付・日時",
+  email: "メールアドレス",
+  phone: "電話番号",
+  source: "メール情報をそのまま取得",
   between: "2つの文字の間（旧形式・自動転記不可）",
   regex: "本文から設定した取得条件",
 };
@@ -1030,6 +1033,7 @@ const sampleValueTypeFromMethod = (method: EditableExtractionMethod): NonNullabl
 
 /** Returns the user-editable condition while preserving the internal safe-locator method. */
 export function extractionEditorMethod(rule: ExtractionRule): EditableExtractionMethod {
+  if (rule.method === "source") return "after";
   if (rule.method !== "regex") return rule.method === "between" ? "after" : rule.method;
   if (rule.locator?.kind === "json") return rule.locator.jsonType === "number" ? "number" : rule.locator.jsonType === "boolean" ? "boolean" : "after";
   return methodFromSampleValueType(rule.locator?.sampleValueType);
