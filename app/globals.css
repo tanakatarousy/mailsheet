@@ -2231,6 +2231,23 @@ svg {
   line-height: 1.55;
 }
 
+.source-field-add { display: grid; gap: 8px; margin-top: 10px; padding: 12px; border: 1px solid rgba(11, 29, 145, 0.16); border-radius: 8px; background: #f7f8ff; }
+.source-field-add > span { color: var(--black); font-size: 11px; font-weight: 750; }
+.source-field-add > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.source-field-add button { min-height: 34px; padding: 0 10px; border: 1px solid rgba(11, 29, 145, 0.22); border-radius: 999px; background: #fff; color: var(--blue); font-size: 10px; font-weight: 750; }
+.rule-source-field { grid-column: 1 / -1; }
+.rule-boundary-field dl,
+.selection-builder__preview dl { display: grid; gap: 6px; margin: 2px 0; }
+.rule-boundary-field dl > div,
+.selection-builder__preview dl > div { display: grid; grid-template-columns: 48px 1fr; gap: 8px; }
+.rule-boundary-field dt,
+.selection-builder__preview dt { color: var(--muted); font-size: 10px; }
+.rule-boundary-field dd,
+.selection-builder__preview dd { margin: 0; color: var(--blue); font-size: 11px; font-weight: 700; overflow-wrap: anywhere; }
+.selection-builder__preview { padding: 10px 12px; border: 1px solid rgba(20, 148, 91, 0.28); border-radius: 7px; background: #eefaf4; }
+.selection-builder__preview > b { display: block; margin-bottom: 7px; color: #17663d; font-size: 11px; }
+.selection-builder__warning { margin: 0; color: #8a5700; font-size: 10px; }
+
 .rule-form > label {
   min-width: 0;
 }
