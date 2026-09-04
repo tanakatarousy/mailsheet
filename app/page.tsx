@@ -16,15 +16,11 @@ import {
   extractValue,
   extractValueResult,
   extractionEditorHeading,
-  extractionEditorMethod,
   extractionLocatorIsSafe,
   detectFields,
   initialRules,
-  methodLabels,
   ruleFromSelection,
   sampleEmail,
-  updateExtractionRuleFromEditor,
-  type EditableExtractionMethod,
   type ExtractionRule,
   type SafeExtractionLocator,
 } from "@/lib/extraction";
@@ -105,26 +101,6 @@ const locatorValueTypeLabel = (locator: SafeExtractionLocator) => {
     email: "メールアドレス",
     phone: "電話番号",
   }[locator.sampleValueType || "text"]);
-};
-const editableExtractionMethods: EditableExtractionMethod[] = ["after", "number", "money", "date", "email", "phone", "boolean"];
-const editableMethodLabels: Record<EditableExtractionMethod, string> = {
-  after: methodLabels.after,
-  number: methodLabels.number,
-  money: methodLabels.money,
-  date: methodLabels.date,
-  email: methodLabels.email,
-  phone: methodLabels.phone,
-  boolean: "真偽値（JSON項目）",
-};
-const editableMethodsForRule = (rule: ExtractionRule) => {
-  if (rule.locator?.kind === "json") return editableExtractionMethods.filter((method) => ["after", "number", "boolean"].includes(method));
-  const genericTextWouldLoseSafety = rule.locator?.kind === "label"
-    && rule.locator.lineEnd === true;
-  return editableExtractionMethods.filter((method) => method !== "boolean" && (method !== "after" || !genericTextWouldLoseSafety));
-};
-const editableMethodLabel = (rule: ExtractionRule, method: EditableExtractionMethod) => {
-  if (rule.locator?.kind !== "json") return editableMethodLabels[method];
-  return method === "after" ? "文字（JSON項目）" : method === "number" ? "数字（JSON項目）" : editableMethodLabels[method];
 };
 const extractionFieldNeedsSafetyReview = (field: ExtractionRule) => (
   field.method === "source"
@@ -667,8 +643,6 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const selectedExtraction = selectedRule
     ? selectedRule.method === "source" ? sourceValueResult(selectedRule, emailMeta, emailBody) : extractValueResult(emailBody, selectedRule, rules)
     : null;
-  const selectedEditorMethod = selectedRule ? extractionEditorMethod(selectedRule) : "after";
-  const selectedEditorHeading = selectedRule ? extractionEditorHeading(selectedRule) : "";
   const selectedPreviewVerified = !live || previewRuleId === (ruleId ?? "draft");
   const selectedRuleIsSafe = !live || Boolean(selectedRule && !extractionFieldNeedsSafetyReview(selectedRule));
   const selectedPreviewReady = selectedPreviewVerified && selectedRuleIsSafe && selectedExtraction?.status === "ok";
@@ -973,13 +947,6 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     setRules((current) => current.map((rule) => (rule.id === selectedRuleId ? { ...rule, ...patch } : rule)));
   };
 
-  const updateSelectedRuleCondition = (patch: { heading?: string; method?: EditableExtractionMethod }) => {
-    markChanged();
-    setRules((current) => current.map((rule) => (
-      rule.id === selectedRuleId ? updateExtractionRuleFromEditor(emailBody, rule, patch, detectedFields) : rule
-    )));
-  };
-
   const addRule = () => {
     const id = Math.max(0, ...rules.map((rule) => rule.id)) + 1;
     const nextRule: ExtractionRule = { id, name: `項目${id}`, method: "after", start: "項目名：", end: "", pattern: "" };
@@ -1047,15 +1014,17 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     const id = Math.max(0, ...rules.map((rule) => rule.id)) + 1;
     const generated = ruleFromSelection(emailBody, text, id, "", start);
     if (!generated) {
-      setSelectedText("");
-      setSelectedTextStart(null);
-      setNotice({ kind: "warning", text: "選んだ文字だけを別メールでも特定できる見出し・区切りが見つかりません。『氏名：山田太郎』のように、見出し直後の値だけを選んでください。" });
+      setSelectedText(text);
+      setSelectedTextStart(start);
+      setSelectionName(selectedRule?.name || "選択項目");
+      setNotice({ kind: "warning", text: "選択は受け付けましたが、開始と終了を安全に特定できません。件名全体なら「Gmailから直接取得」の「メール件名」を選んでください。本文内の値なら、見出し直後の値だけを選び直してください。" });
+      window.setTimeout(() => scrollToRef(selectionBuilderRef, 120), 0);
       return;
     }
     setSelectedText(text);
     setSelectedTextStart(start);
     setSelectionName(generated.suggestedName);
-    scrollToRef(selectionBuilderRef);
+    window.setTimeout(() => scrollToRef(selectionBuilderRef, 120), 0);
   };
 
   const addSelectedTextRule = () => {
@@ -1686,7 +1655,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
               <strong>{selectedText}</strong>
               {selectedRangePreview?.rule.locator ? <div className="selection-builder__preview" aria-live="polite"><b>この範囲で取得できます</b><dl><div><dt>開始</dt><dd>{locatorStartLabel(selectedRangePreview.rule)}</dd></div><div><dt>終了</dt><dd>{locatorEndLabel(selectedRangePreview.rule.locator)}</dd></div><div><dt>結果</dt><dd>{extractValue(emailBody, selectedRangePreview.rule, rules)}</dd></div></dl></div> : <p className="selection-builder__warning">開始と終了を安全に特定できません。値だけを選び直してください。</p>}
               <label><span>シートの項目名</span><input value={selectionName} onChange={(event) => setSelectionName(event.target.value)} placeholder="例：氏名、注文番号" /></label>
-              <div>{selectedRule ? <button type="button" onClick={replaceSelectedTextRule} disabled={!selectionName.trim()}>選択中の「{selectedRule.name}」をこの設定に置き換える</button> : null}<button type="button" className={selectedRule ? "is-secondary" : undefined} onClick={addSelectedTextRule} disabled={!selectionName.trim()}>新しい取得項目として追加</button><button type="button" className="is-cancel" onClick={() => { setSelectedText(""); setSelectedTextStart(null); setSelectionName(""); }}>キャンセル</button></div>
+              <div>{selectedRule ? <button type="button" onClick={replaceSelectedTextRule} disabled={!selectionName.trim() || !selectedRangePreview}>選択中の「{selectedRule.name}」をこの設定に置き換える</button> : null}<button type="button" className={selectedRule ? "is-secondary" : undefined} onClick={addSelectedTextRule} disabled={!selectionName.trim() || !selectedRangePreview}>新しい取得項目として追加</button><button type="button" className="is-cancel" onClick={() => { setSelectedText(""); setSelectedTextStart(null); setSelectionName(""); }}>キャンセル</button></div>
               <small>値そのものや自由な正規表現は保存せず、前後の見出しと区切りを安全な取得位置として保存します。</small>
             </div>
           ) : null}
@@ -1725,7 +1694,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
           </section>
           <button type="button" className="add-rule-button" onClick={addRule}><Icon name="plus" size={17} /> 項目を追加</button>
           <div className="source-field-add">
-            <span>メール情報をそのまま取得</span>
+            <span>Gmailから直接取得 <small>本文の範囲指定なし</small></span>
             <div>{sourceFieldDefaults.map((item) => <button type="button" key={item.sourceField} onClick={() => addSourceRule(item.sourceField, item.name)} disabled={busy === "save"}>＋ {item.name}</button>)}</div>
           </div>
 
@@ -1733,17 +1702,14 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
             <div ref={ruleFormRef} className="rule-form">
               <label className="rule-name-field"><span>取得項目名 <small>シートで使う名前</small></span><input value={selectedRule.name} onChange={(event) => updateRule({ name: event.target.value, anchorConfirmed: true })} placeholder="例：注文番号、予約日時、会社名、金額" disabled={busy === "save"} /><small>ここを変更しても、メール本文から探す見出しと取得結果は変わりません。</small></label>
               {selectedRule.method === "source" ? (
-                <label className="rule-source-field"><span>取得するメール情報 <small>加工なし</small></span><select value={selectedRule.sourceField || "subject"} onChange={(event) => updateRule({ sourceField: event.target.value as MessageSourceField })} disabled={busy === "save"}>{Object.entries(sourceFieldLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small>見出しや正規表現は使わず、Gmailの情報をそのまま出力します。</small></label>
+                <label className="rule-source-field"><span>判定条件 <small>Gmailから直接取得</small></span><select value={selectedRule.sourceField || "subject"} onChange={(event) => updateRule({ sourceField: event.target.value as MessageSourceField })} disabled={busy === "save"}>{Object.entries(sourceFieldLabels).map(([value, label]) => <option key={value} value={value}>{label}をそのまま取得</option>)}</select><small>本文内の見出しや正規表現は使いません。Gmail APIから受け取った値をそのまま出力します。</small></label>
               ) : (
                 <>
-                  <label className="rule-condition-field"><span>値の種類 <small>形式チェック</small></span><select value={selectedEditorMethod} onChange={(event) => updateSelectedRuleCondition({ method: event.target.value as EditableExtractionMethod })} disabled={busy === "save"}>{editableMethodsForRule(selectedRule).map((method) => <option key={method} value={method}>{editableMethodLabel(selectedRule, method)}</option>)}</select><small>取得後の値が、選んだ種類に合っているか確認します。</small>{selectedRule.locator?.kind === "label" && selectedRule.locator.lineEnd === true ? <small>行末だけを終端にする自由文は、誤取得を防ぐため「文字」として保存できません。</small> : null}</label>
-                  <label className="rule-heading-field"><span>開始位置 <small>この見出しの直後</small></span><input value={selectedEditorHeading} onChange={(event) => updateSelectedRuleCondition({ heading: event.target.value })} placeholder={`例：${selectedRule.name || "氏名"}`} disabled={busy === "save"} /><small>本文中の値ではなく、値の直前にある見出しです。「→」は外側から内側の順です。</small></label>
-                  <div className="rule-boundary-field"><span>取得範囲 <small>開始と終了</small></span><dl><div><dt>開始</dt><dd>{locatorStartLabel(selectedRule)}</dd></div><div><dt>終了</dt><dd>{selectedRule.method === "regex" && selectedRule.locator ? locatorEndLabel(selectedRule.locator) : "まだ確定していません"}</dd></div></dl><small>終了位置が消えた、または複数見つかった場合は転記しません。範囲を直す場合は、左の本文で正しい値を選び直してください。</small></div>
-                  {selectedRule.method !== "regex" ? <p className="rule-safety-note">開始見出しが本文内で1件に決まると、終了位置まで含めた取得範囲を自動設定します。取得できる状態になるまで自動転記は開始しません。</p> : null}
+                  <div className="rule-boundary-field rule-condition-summary"><span>判定条件 <small>実際に保存する条件</small></span><dl><div><dt>開始</dt><dd>{locatorStartLabel(selectedRule)}</dd></div><div><dt>終了</dt><dd>{selectedRule.method === "regex" && selectedRule.locator ? locatorEndLabel(selectedRule.locator) : "未確定"}</dd></div><div><dt>確認</dt><dd>{selectedRule.method === "regex" && selectedRule.locator ? `${locatorValueTypeLabel(selectedRule.locator)}の形式と、周囲の見出し構造がサンプルと一致すること` : "本文から値を選び直して条件を確定してください"}</dd></div></dl><button type="button" onClick={() => scrollToRef(mailPreviewRef)} disabled={busy === "save"}>本文で取得範囲を選び直す</button><small>この開始と終了の間だけを取得します。終了位置が消えた、複数見つかった、形式または周囲の構造が変わった場合は転記しません。</small></div>
                 </>
               )}
               {selectedRule.aliases?.length ? <p className="rule-safety-note">この保存済み設定では、以前に登録した追加見出しも使われています。基準となる見出しまたは抽出条件を変更すると解除され、表示中の見出しだけで判定します。</p> : null}
-              <div className={`live-result ${selectedPreviewReady ? "is-success" : "is-warning"}`} role="status" aria-live="polite" aria-atomic="true"><span>「{selectedRule.name || "未入力"}」の自動プレビュー <small>入力・範囲変更のたびに再判定</small></span><strong>{selectedPreviewTitle}</strong>{selectedPreviewReady ? <b>{selectedExtraction?.value}</b> : null}<small className="live-result__basis">{selectedRule.method === "source" ? `取得元「${selectedRule.sourceField ? sourceFieldLabels[selectedRule.sourceField] : "未選択"}」／加工なし` : `範囲「${locatorStartLabel(selectedRule)} → ${selectedRule.locator ? locatorEndLabel(selectedRule.locator) : "未確定"}」／種類「${editableMethodLabel(selectedRule, selectedEditorMethod)}」`}</small><i className={selectedPreviewReady ? "is-success" : "is-warning"}>{selectedPreviewReady ? "✓" : "!"}</i>{!selectedPreviewVerified ? <small className="live-result__reason">保存時のメール本文は保存していません。左で一致する実メールを選ぶか、サンプル本文を手動で調整してください。</small> : !selectedRuleIsSafe ? <small className="live-result__reason">現在の条件から安全な取得範囲を1つに決められていません。本文から値を選び直してください。</small> : selectedExtraction?.status !== "ok" && selectedExtraction?.reason ? <small className="live-result__reason">判定理由：{selectedExtraction.reason}</small> : null}</div>
+              <div className={`live-result ${selectedPreviewReady ? "is-success" : "is-warning"}`} role="status" aria-live="polite" aria-atomic="true"><span>「{selectedRule.name || "未入力"}」の自動プレビュー <small>条件変更のたびに再判定</small></span><strong>{selectedPreviewTitle}</strong>{selectedPreviewReady ? <b>{selectedExtraction?.value}</b> : null}<small className="live-result__basis">{selectedRule.method === "source" ? `判定条件：Gmailの${selectedRule.sourceField ? sourceFieldLabels[selectedRule.sourceField] : "取得元未選択"}をそのまま取得` : `判定条件：${locatorStartLabel(selectedRule)}から${selectedRule.locator ? locatorEndLabel(selectedRule.locator) : "終了位置未確定"}まで`}</small><i className={selectedPreviewReady ? "is-success" : "is-warning"}>{selectedPreviewReady ? "✓" : "!"}</i>{!selectedPreviewVerified ? <small className="live-result__reason">保存時のメール本文は保存していません。左で一致する実メールを選ぶか、サンプル本文を手動で調整してください。</small> : !selectedRuleIsSafe ? <small className="live-result__reason">現在の条件から安全な取得範囲を1つに決められていません。本文から値を選び直してください。</small> : selectedExtraction?.status !== "ok" && selectedExtraction?.reason ? <small className="live-result__reason">判定理由：{selectedExtraction.reason}</small> : null}</div>
               {selectedRule.method === "regex" && selectedRule.locator ? <details className="automatic-rule-details"><summary>取得条件と誤取得防止を確認</summary><dl><div><dt>取得する範囲</dt><dd>{locatorBoundaryLabel(selectedRule.locator)}</dd></div><div><dt>値の種類</dt><dd>{locatorValueTypeLabel(selectedRule.locator)}</dd></div><div><dt>安全判定</dt><dd>見出しの重複、境界見出しの欠落、対象と境界の間への別項目挿入、値の形式不一致を検出した場合は転記せず「要確認」</dd></div></dl><p>入力文字を正規表現として実行していません。見出しは全角・半角や空白を正規化してから完全一致で照合し、値はサンプルから判定した日付・日時・電話番号・メールアドレスなどの形式でも検証します。</p></details> : null}
               {selectedRule.method === "regex" ? <p className="automatic-rule-note">値が変わっても同じ見出しと境界から取得します。ただし、すべての別形式を自動判断できる保証はありません。見出し候補が複数ある場合は、推測せず「要確認」に止めます。</p> : null}
             </div>
