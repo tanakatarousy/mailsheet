@@ -490,7 +490,6 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
   const [selectedDetectedIndexes, setSelectedDetectedIndexes] = useState<number[]>([]);
   const [sheetConnection, setSheetConnection] = useState<{ state: "idle" | "checking" | "connected" | "error"; message: string }>({ state: "idle", message: "" });
   const [recentInputHistory, setRecentInputHistory] = useState<RecentInputHistory>(emptyRecentInputHistory);
-  const draggedRuleId = useRef<number | null>(null);
   const savedRulesRef = useRef<HTMLElement | null>(null);
   const gmailResultsRef = useRef<HTMLDivElement | null>(null);
   const mailPreviewRef = useRef<HTMLDivElement | null>(null);
@@ -635,7 +634,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       kind: "warning",
       text: unsafeField
         ? `「${unsafeField.name}」の取得位置を修正します。左のメール本文で取得したい値だけを選び、「選択中の…をこの設定に置き換える」を押してください。修正後は自動転記をONにして保存してください。`
-        : "取得位置を確認する項目が見つかりませんでした。各項目のプレビューを確認してください。",
+        : "取得位置を確認する項目が見つかりませんでした。各項目の取得結果を確認してください。",
     });
     scrollToRef(mailPreviewRef, 120);
   };
@@ -911,22 +910,6 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
     markChanged();
   };
 
-  const dropRule = (targetId: number) => {
-    const sourceId = draggedRuleId.current;
-    draggedRuleId.current = null;
-    if (!sourceId || sourceId === targetId) return;
-    setRules((current) => {
-      const sourceIndex = current.findIndex((rule) => rule.id === sourceId);
-      const targetIndex = current.findIndex((rule) => rule.id === targetId);
-      if (sourceIndex < 0 || targetIndex < 0) return current;
-      const next = [...current];
-      const [moved] = next.splice(sourceIndex, 1);
-      next.splice(targetIndex, 0, moved);
-      return next;
-    });
-    markChanged();
-  };
-
   const selectMessage = (message: GmailMessage) => {
     setEmailBody(message.body);
     setEmailMeta({ subject: message.subject, from: message.from });
@@ -1064,7 +1047,7 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
       return;
     }
     if (activeOverride && !ruleId && hasMissingResult) {
-      setNotice({ kind: "warning", text: "プレビューで抽出できていない項目があります。すべての値を確認してから新着メールの自動転記をONにしてください。" });
+      setNotice({ kind: "warning", text: "取得できていない項目があります。このサンプル本文での取得結果をすべて確認してから新着メールの自動転記をONにしてください。" });
       scrollToRef(extractionRulesRef);
       return;
     }
@@ -1412,18 +1395,16 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
 
         <div className="rule-pane">
           <div className="section-mini-heading"><span>03</span><div><small>EXTRACT RULES</small><h3 id="rules-title">取得項目を自由に指定</h3></div></div>
-          <p className="rule-reorder-hint">↕ 左のハンドルをつかんで、項目を上下に並び替えられます。</p>
           <section ref={extractionRulesRef} className="rule-list" role="list" aria-label="抽出項目一覧">
             {!rules.length ? <p className="rule-list-empty">取得項目はまだありません。本文から値を選択するか、下の「項目を追加」を押してください。</p> : null}
             {rules.map((rule, index) => {
               const value = extractValue(emailBody, rule, rules);
               return (
-                <div key={rule.id} data-rule-id={rule.id} className={selectedRuleId === rule.id ? "rule-list-item is-selected" : "rule-list-item"} role="listitem" onDragOver={(event) => event.preventDefault()} onDrop={() => dropRule(rule.id)}>
-                  <span className="rule-drag-handle" draggable onDragStart={() => { draggedRuleId.current = rule.id; }} onDragEnd={() => { draggedRuleId.current = null; }} title="つかんで並び替え" aria-label={`${rule.name}をドラッグして並び替え`}>↕</span>
+                <div key={rule.id} data-rule-id={rule.id} className={selectedRuleId === rule.id ? "rule-list-item is-selected" : "rule-list-item"} role="listitem">
                   <button type="button" className="rule-list-item__main" onClick={() => setSelectedRuleId(rule.id)}>
                     <i>{String(index + 1).padStart(2, "0")}</i><span><strong>{rule.name}</strong><small>{value || "未抽出"}</small></span><em className={value ? "status-dot is-success" : "status-dot"}>{value ? "✓" : "!"}</em>
                   </button>
-                  <span className="rule-order-actions">
+                  <span className="rule-order-actions" role="group" aria-label={`${rule.name}の並び順と削除`}>
                     <button type="button" onClick={() => moveRule(rule.id, -1)} disabled={index === 0} aria-label={`${rule.name}を上へ`}><Icon name="up" size={15} /></button>
                     <button type="button" onClick={() => moveRule(rule.id, 1)} disabled={index === rules.length - 1} aria-label={`${rule.name}を下へ`}><Icon name="down" size={15} /></button>
                     <button type="button" onClick={() => removeRule(rule.id)} aria-label={`${rule.name}を削除`}><Icon name="trash" size={15} /></button>
@@ -1446,14 +1427,14 @@ function RuleWorkbench({ embedded = false, onDataChanged }: { embedded?: boolean
                 <div className="marker-fields">
                   <label><span>{selectedRule.method === "between" ? "値の直前にある文字" : "項目を見分ける見出し"}</span><input value={selectedRule.start} onChange={(event) => updateRule({ start: event.target.value })} placeholder={selectedRule.method === "between" ? "例：【氏名】" : `例：${selectedRule.name || "氏名"}`} /></label>
                   {selectedRule.method === "between" ? <label><span>値の直後にある文字</span><input value={selectedRule.end} onChange={(event) => updateRule({ end: event.target.value })} placeholder="例：【フリガナ】" /></label> : null}
-                  {selectedRule.method !== "between" ? <label><span>別の見出し <small>任意・読点区切り</small></span><input value={(selectedRule.aliases || []).join("、")} onChange={(event) => updateRule({ aliases: event.target.value.split(/[、,]/).map((value) => value.trim().slice(0, 100)).filter(Boolean).slice(0, 10) })} placeholder="例：お名前、応募者名" /></label> : null}
+                  {selectedRule.method !== "between" ? <details key={`aliases-${selectedRule.id}`} className="rule-alias-settings" open={Boolean(selectedRule.aliases?.length) || undefined}><summary>別のメール表記にも対応（任意）</summary><p>通常は空欄で問題ありません。同じ項目が別のメールで「お名前」「応募者名」のように表記される場合だけ追加してください。</p><label><span>追加で探す見出し</span><input value={(selectedRule.aliases || []).join("、")} onChange={(event) => updateRule({ aliases: event.target.value.split(/[、,]/).map((value) => value.trim().slice(0, 100)).filter(Boolean).slice(0, 10) })} placeholder="例：お名前、応募者名" /><small>複数ある場合は読点「、」で区切ります。</small></label></details> : null}
                 </div>
               ) : null}
               {selectedRule.method !== "regex" ? <p className="rule-safety-note">この詳細設定はプレビュー確認用です。新着メールの自動転記に使うには、左の本文で取得したい値だけを選び、この項目を安全な自動設定へ置き換えてください。</p> : null}
               {selectedRule.method === "regex" && selectedRule.locator ? <div className="automatic-rule-source"><span>メール本文で探す見出し</span><strong>{locatorSourceLabel(selectedRule.locator)}</strong><small>取得項目名を変更しても、本文ではこの見出しを探します。</small></div> : null}
-              {selectedRule.method === "regex" && selectedRule.locator?.kind === "label" && !selectedRule.locator.innerLabel ? <label><span>メール本文の別見出し <small>任意・読点区切り</small></span><input value={(selectedRule.aliases || []).join("、")} onChange={(event) => updateRule({ aliases: event.target.value.split(/[、,]/).map((value) => value.trim().slice(0, 100)).filter(Boolean).slice(0, 10) })} placeholder={`例：${selectedRule.name === "氏名" ? "お名前、応募者名" : `${selectedRule.locator.label || selectedRule.name}の別表記`}`} /></label> : null}
-              <div className="live-result"><span>プレビュー</span><strong>{selectedExtraction?.value || "抽出できませんでした"}</strong><i className={selectedExtraction?.status === "ok" ? "is-success" : "is-warning"}>{selectedExtraction?.status === "ok" ? "✓" : "!"}</i>{selectedExtraction?.status !== "ok" ? <small className="live-result__reason">{selectedExtraction?.reason}</small> : null}</div>
-              {selectedRule.method === "regex" && selectedRule.locator ? <details className="automatic-rule-details"><summary>取得条件と誤取得防止を確認</summary><dl><div><dt>取得する範囲</dt><dd>{locatorBoundaryLabel(selectedRule.locator)}</dd></div><div><dt>値の種類</dt><dd>{locatorValueTypeLabel(selectedRule.locator)}</dd></div><div><dt>安全判定</dt><dd>見出しが複数ある、周囲の項目構造が変わる、値の形式が合わない場合は転記せず「要確認」</dd></div></dl><p>入力文字を正規表現として実行していません。固定の構造判定で見出しを探し、正規化後の文字列を完全一致で照合します。</p></details> : null}
+              {selectedRule.method === "regex" && selectedRule.locator?.kind === "label" && !selectedRule.locator.innerLabel ? <details key={`aliases-${selectedRule.id}`} className="rule-alias-settings" open={Boolean(selectedRule.aliases?.length) || undefined}><summary>別のメール表記にも対応（任意）</summary><p>通常は空欄で問題ありません。同じ項目が別のメールで「お名前」「応募者名」のように表記される場合だけ追加してください。</p><label><span>追加で探す見出し</span><input value={(selectedRule.aliases || []).join("、")} onChange={(event) => updateRule({ aliases: event.target.value.split(/[、,]/).map((value) => value.trim().slice(0, 100)).filter(Boolean).slice(0, 10) })} placeholder={`例：${selectedRule.name === "氏名" ? "お名前、応募者名" : `${selectedRule.locator.label || selectedRule.name}の別表記`}`} /><small>複数ある場合は読点「、」で区切ります。</small></label></details> : null}
+              <div className={`live-result ${selectedExtraction?.status === "ok" ? "is-success" : "is-warning"}`}><span>このサンプル本文での取得結果</span><strong>{selectedExtraction?.status === "ok" ? selectedExtraction.value : "取得できません"}</strong><i className={selectedExtraction?.status === "ok" ? "is-success" : "is-warning"}>{selectedExtraction?.status === "ok" ? "✓" : "!"}</i>{selectedExtraction?.status !== "ok" && selectedExtraction?.reason ? <small className="live-result__reason">判定理由：{selectedExtraction.reason}</small> : null}</div>
+              {selectedRule.method === "regex" && selectedRule.locator ? <details className="automatic-rule-details"><summary>取得条件と誤取得防止を確認</summary><dl><div><dt>取得する範囲</dt><dd>{locatorBoundaryLabel(selectedRule.locator)}</dd></div><div><dt>値の種類</dt><dd>{locatorValueTypeLabel(selectedRule.locator)}</dd></div><div><dt>安全判定</dt><dd>見出しの重複、境界見出しの欠落、対象と境界の間への別項目挿入、値の形式不一致を検出した場合は転記せず「要確認」</dd></div></dl><p>入力文字を正規表現として実行していません。見出しは全角・半角や空白を正規化してから完全一致で照合し、値はサンプルから判定した日付・日時・電話番号・メールアドレスなどの形式でも検証します。</p></details> : null}
               {selectedRule.method === "regex" ? <p className="automatic-rule-note">値が変わっても同じ見出しと境界から取得します。ただし、すべての別形式を自動判断できる保証はありません。見出し候補が複数ある場合は、推測せず「要確認」に止めます。</p> : null}
             </div>
           ) : null}
@@ -1670,7 +1651,7 @@ function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
               <div className="mini-rule-panel">
                 <label><span>抽出項目</span><strong>氏名</strong></label>
                 <label><span>取り出し方法</span><strong>「氏名：」の後ろ</strong></label>
-                <div><span>プレビュー</span><strong>山田 太郎</strong><i>✓</i></div>
+                <div><span>このメールでの取得結果</span><strong>山田 太郎</strong><i>✓</i></div>
               </div>
             </div>
           </article>
@@ -2072,7 +2053,7 @@ function GettingStartedGuide({ auth, onNavigate }: { auth: AuthStatus | null; on
             <ol className="guide-instructions">
               <li><strong>本文中の欲しい値をドラッグして選ぶ</strong><p>例：「池田 隼人」の部分だけを選びます。選んだ文字の前後から、取り出し方が自動で作られます。</p></li>
               <li><strong>シートで使う項目名を付ける</strong><p>「氏名」「電話番号」「住所」など、列名として分かりやすい名前にします。</p></li>
-              <li><strong>必要な項目を同じ手順で追加する</strong><p>項目は左のハンドルまたは上下ボタンで並び替えられます。抽出結果で値が取れていることを確認します。</p></li>
+              <li><strong>必要な項目を同じ手順で追加する</strong><p>項目は上下ボタンで並び替えられます。「このサンプル本文での取得結果」で値が取れていることを確認します。</p></li>
             </ol>
             <div className="guide-selection-sample"><small>本文中の値を選択</small><p>【氏名】 <mark>池田 隼人</mark><br />【電話番号】 090-0000-0000</p><div><span>選択した文字</span><strong>池田 隼人</strong><button type="button" tabIndex={-1}>この文字を取得項目にする</button></div></div>
           </div>

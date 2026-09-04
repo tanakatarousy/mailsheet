@@ -1625,7 +1625,7 @@ function structuralLabelTokens(value) {
     end: (match.index ?? 0) + match[0].length,
     signature: `b:${semanticLabel(match[1] || match[2] || "")}`
   })).filter((token) => token.signature.length > 2 && token.signature.length <= 102);
-  const possible = /(?:^|[\n \t\u3000]+|[／/;；,，、])(?:[*#・■□◇◆]+[ \t\u3000]*)*([\p{L}][\p{L}\p{N}_・\- \t\u3000]{0,30}?)\s*(?:\*{1,2}\s*)?(?:：|:|＞|＝＞|=>|->|=|＝)/gmu;
+  const possible = /(?:^|[\n \t\u3000]+|[｜|／/;；,，、])(?:[*#・■□◇◆]+[ \t\u3000]*)*([\p{L}][\p{L}\p{N}_・\- \t\u3000]{0,30}?)\s*(?:\*{1,2}\s*)?(?:：|:|＞|＝＞|=>|->|=|＝)/gmu;
   const plainTokens = [];
   for (const match of value.matchAll(possible)) {
     const label = String(match[1] || "").replace(/[\s\u3000]+/g, "").toLowerCase();
@@ -1770,7 +1770,7 @@ function extractWithSafeLocator(body, rule) {
     if (!locations.length) return { value: "", status: "missing", reason: locator.innerLabel ? `\u898B\u51FA\u3057\u300C${locator.innerLabel}\u300D\u304C\u7D9A\u304F\u53D6\u5F97\u4F4D\u7F6E\u3092\u78BA\u8A8D\u3067\u304D\u307E\u305B\u3093\u3002` : `\u898B\u51FA\u3057\u300C${locator.label}\u300D\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002` };
     if (locations.length > 1) return { value: "", status: "ambiguous", reason: `\u898B\u51FA\u3057\u300C${locator.label}\u300D\u304C\u8907\u6570\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002` };
     const { anchor, valueStart, contentStart, quoteDepth } = locations[0];
-    if (JSON.stringify(structuralContextLabels(body, anchor.end)) !== JSON.stringify(locator.sampleContextLabels)) return { value: "", status: "invalid", reason: "サンプルと周囲の項目構造が変わったため、自動転記しません。" };
+    if (!locator.nextLabel && JSON.stringify(structuralContextLabels(body, anchor.end)) !== JSON.stringify(locator.sampleContextLabels)) return { value: "", status: "invalid", reason: "サンプルと周囲の項目構造が変わったため、自動転記しません。" };
     const lineEnd = body.indexOf("\n", contentStart) < 0 ? body.length : body.indexOf("\n", contentStart);
     let end = lineEnd;
     if (locator.nextLabel) {
@@ -1778,6 +1778,8 @@ function extractWithSafeLocator(body, rule) {
       const nextMatches = locator.nextLabelBracketed ? bracketLabelMatchesAnywhere(body.slice(contentStart, searchEnd), locator.nextLabel).map((match) => ({ index: contentStart + match.index, end: contentStart + match.end })) : plainLabelMatchesAfter(body, locator.nextLabel, contentStart, searchEnd);
       if (!nextMatches.length) return { value: "", status: "missing", reason: `\u6B21\u306E\u898B\u51FA\u3057\u300C${locator.nextLabel}\u300D\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002` };
       if (nextMatches.length > 1) return { value: "", status: "ambiguous", reason: `\u6B21\u306E\u898B\u51FA\u3057\u300C${locator.nextLabel}\u300D\u304C\u8907\u6570\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002` };
+      const interveningLabels = structuralLabelTokens(body.slice(contentStart, nextMatches[0].index));
+      if (interveningLabels.length) return { value: "", status: "invalid", reason: `\u898B\u51FA\u3057\u300C${locator.label}\u300D\u3068\u6B21\u306E\u898B\u51FA\u3057\u300C${locator.nextLabel}\u300D\u306E\u9593\u306B\u5225\u306E\u9805\u76EE\u304C\u3042\u308B\u305F\u3081\u3001\u81EA\u52D5\u8EE2\u8A18\u3057\u307E\u305B\u3093\u3002` };
       end = nextMatches[0].index;
       const boundaryLineStart = body.lastIndexOf("\n", Math.max(contentStart, end - 1)) + 1;
       const boundaryPrefix = body.slice(boundaryLineStart, end);

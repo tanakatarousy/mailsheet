@@ -584,7 +584,7 @@ function structuralLabelTokens(value: string) {
       signature: `b:${semanticLabel(match[1] || match[2] || "")}`,
     }),
   ).filter((token) => token.signature.length > 2 && token.signature.length <= 102);
-  const possible = /(?:^|[\n \t\u3000]+|[／/;；,，、])(?:[*#・■□◇◆]+[ \t\u3000]*)*([\p{L}][\p{L}\p{N}_・\- \t\u3000]{0,30}?)\s*(?:\*{1,2}\s*)?(?:：|:|＞|＝＞|=>|->|=|＝)/gmu;
+  const possible = /(?:^|[\n \t\u3000]+|[｜|／/;；,，、])(?:[*#・■□◇◆]+[ \t\u3000]*)*([\p{L}][\p{L}\p{N}_・\- \t\u3000]{0,30}?)\s*(?:\*{1,2}\s*)?(?:：|:|＞|＝＞|=>|->|=|＝)/gmu;
   const plainTokens: StructuralLabelToken[] = [];
   for (const match of value.matchAll(possible)) {
     const label = String(match[1] || "").replace(/[\s\u3000]+/g, "").toLowerCase();
@@ -780,7 +780,7 @@ function extractWithSafeLocator(body: string, rule: ExtractionRule): ExtractionR
     if (!locations.length) return { value: "", status: "missing", reason: locator.innerLabel ? `見出し「${locator.innerLabel}」が続く取得位置を確認できません。` : `見出し「${locator.label}」が見つかりません。` };
     if (locations.length > 1) return { value: "", status: "ambiguous", reason: `見出し「${locator.label}」が複数あるため、自動転記しません。` };
     const { anchor, valueStart, contentStart, quoteDepth } = locations[0];
-    if (JSON.stringify(structuralContextLabels(body, anchor.end)) !== JSON.stringify(locator.sampleContextLabels)) {
+    if (!locator.nextLabel && JSON.stringify(structuralContextLabels(body, anchor.end)) !== JSON.stringify(locator.sampleContextLabels)) {
       return { value: "", status: "invalid", reason: "サンプルと周囲の項目構造が変わったため、自動転記しません。" };
     }
     const lineEnd = body.indexOf("\n", contentStart) < 0 ? body.length : body.indexOf("\n", contentStart);
@@ -792,6 +792,10 @@ function extractWithSafeLocator(body: string, rule: ExtractionRule): ExtractionR
         : plainLabelMatchesAfter(body, locator.nextLabel, contentStart, searchEnd);
       if (!nextMatches.length) return { value: "", status: "missing", reason: `次の見出し「${locator.nextLabel}」が見つかりません。` };
       if (nextMatches.length > 1) return { value: "", status: "ambiguous", reason: `次の見出し「${locator.nextLabel}」が複数あるため、自動転記しません。` };
+      const interveningLabels = structuralLabelTokens(body.slice(contentStart, nextMatches[0].index));
+      if (interveningLabels.length) {
+        return { value: "", status: "invalid", reason: `見出し「${locator.label}」と次の見出し「${locator.nextLabel}」の間に別の項目があるため、自動転記しません。` };
+      }
       end = nextMatches[0].index;
       const boundaryLineStart = body.lastIndexOf("\n", Math.max(contentStart, end - 1)) + 1;
       const boundaryPrefix = body.slice(boundaryLineStart, end);

@@ -433,7 +433,7 @@ test("uses structured locations across mail variations and fails closed when bou
   const variations = [
     ["【 氏 名 】 佐藤 花子【 電話 番号 】080-2222-3333", "ok", "佐藤 花子"],
     ["【氏名】【電話番号】080-2222-3333", "invalid", ""],
-    ["【氏名】佐藤 花子【住所】東京", "invalid", ""],
+    ["【氏名】佐藤 花子【住所】東京", "missing", ""],
     ["【氏名】佐藤 花子【部署】開発【電話番号】080-2222-3333", "invalid", ""],
     ["【氏名】佐藤 花子 部署：開発【電話番号】080-2222-3333", "invalid", ""],
     ["【氏名】佐藤【電話番号】080-1111-2222【氏名】鈴木【電話番号】080-2222-3333", "ambiguous", ""],
@@ -484,6 +484,57 @@ test("uses structured locations across mail variations and fails closed when bou
   const qaChanged = "Q1. 氏名を入力\n未回答\n\nQ2. 希望色\n回答：[ 赤 ]";
   assert.equal(extractValueResult(qaChanged, qaRule).status, "missing");
   assert.deepEqual(extractWorkerValueResult(qaChanged, qaRule), extractValueResult(qaChanged, qaRule));
+});
+
+test("keeps a typed sent date stable when only labels after its immediate boundary change", async () => {
+  const { detectFields, extractValueResult } = await vite.ssrLoadModule("/lib/extraction.ts");
+  const { extractWorkerValueResult } = await import(path.join(root, "worker", "index.js"));
+  const sample = "送信日時：2026年9月3日 1:16\n宛先：採用担当\n件名：応募通知\n氏名：池田 隼人";
+  const field = detectFields(sample).find((item) => item.name === "送信日時");
+  assert.ok(field);
+  assert.equal(field.rule.locator?.sampleValueType, "date");
+  assert.equal(field.rule.locator?.nextLabel, "宛先");
+  assert.deepEqual(field.rule.locator?.sampleContextLabels, ["@anchor", "p:宛先", "p:件名", "p:氏名"]);
+
+  const cases = [
+    {
+      body: "送信日時：2026年9月4日 9:05\n宛先：採用担当\nCc：責任者\n受付番号：A-1\n件名：別の通知",
+      status: "ok",
+      value: "2026年9月4日 9:05",
+      reason: /^$/,
+    },
+    {
+      body: "送信日時：2026年9月4日 9:05\nCc：責任者\n宛先：採用担当\n件名：別の通知",
+      status: "invalid",
+      value: "",
+      reason: /間に別の項目/,
+    },
+    {
+      body: "送信日時：2026年9月4日 9:05\nCc：責任者\n件名：別の通知",
+      status: "missing",
+      value: "",
+      reason: /次の見出し「宛先」が見つかりません/,
+    },
+    {
+      body: "送信日時：2026年9月4日 9:05\n宛先：A\n送信日時：2026年9月5日 10:15\n宛先：B",
+      status: "ambiguous",
+      value: "",
+      reason: /見出し「送信日時」が複数/,
+    },
+    {
+      body: "送信日時：2026年2月30日 25:61\n宛先：採用担当\n件名：通知",
+      status: "invalid",
+      value: "",
+      reason: /値の種類/,
+    },
+  ];
+  for (const { body, status, value, reason } of cases) {
+    const client = extractValueResult(body, field.rule);
+    assert.equal(client.status, status, body);
+    assert.equal(client.value, value, body);
+    assert.match(client.reason, reason, body);
+    assert.deepEqual(extractWorkerValueResult(body, field.rule), client, body);
+  }
 });
 
 test("typed extraction never steals a later field value", async () => {
@@ -785,18 +836,17 @@ test("fails closed for missing, unbalanced, and prose-like QA answers", async ()
   }
 });
 
-test("checks nearby label structure and never returns an empty include-label value", async () => {
+test("uses only the immediate boundary and never returns an empty include-label value", async () => {
   const { extractValueResult, ruleFromSelection } = await vite.ssrLoadModule("/lib/extraction.ts");
   const { extractWorkerValueResult } = await import(path.join(root, "worker", "index.js"));
   const sample = "【氏名】池田 隼人【電話番号】090-1111-2222";
   const selected = ruleFromSelection(sample, "池田 隼人", 124, "氏名", sample.indexOf("池田 隼人"));
   assert.ok(selected);
   assert.deepEqual(selected.rule.locator?.sampleContextLabels, ["@anchor", "b:電話番号"]);
-  const changedStructure = "【氏名】佐藤 備考【電話番号】を参照【携帯番号】080-2222-3333";
+  const changedStructure = "【氏名】佐藤 花子【電話番号】080-2222-3333【携帯番号】090-1111-2222";
   const client = extractValueResult(changedStructure, selected.rule);
-  assert.equal(client.status, "invalid");
-  assert.equal(client.value, "");
-  assert.match(client.reason, /周囲の項目構造/);
+  assert.equal(client.status, "ok");
+  assert.equal(client.value, "佐藤 花子");
   assert.deepEqual(extractWorkerValueResult(changedStructure, selected.rule), client);
 
   const brandedSample = "【Indeed】求人通知【氏名】池田 隼人";
@@ -854,7 +904,7 @@ test("ships the complete LP and interactive app prototype", async () => {
     "本文中の値をドラッグして選択",
     "この文字を取得項目にする",
     "項目を見分ける見出し",
-    "別の見出し",
+    "追加で探す見出し",
     "候補が複数ある場合は、推測せず",
     "自動転記に使うには",
   ]) {
@@ -1092,7 +1142,8 @@ test("saves current sheet mappings when enabling a rule and guides the next acti
   assert.match(page, /scrollToRef\(gmailResultsRef\)/);
   assert.match(page, /scrollToRef\(selectionBuilderRef\)/);
   assert.match(page, /scrollToRef\(extractionRulesRef\)/);
-  assert.match(page, /左のハンドルをつかんで、項目を上下に並び替えられます/);
+  assert.doesNotMatch(page, /左のハンドル|rule-drag-handle|draggable/);
+  assert.match(page, /aria-label=\{`\$\{rule\.name\}の並び順と削除`\}/);
   assert.match(page, /NEXT \{nextGuide\.step\}/);
   assert.match(page, /1行目と列を自動設定/);
   assert.match(page, /<option value="">出力列を選択<\/option>/);
@@ -1146,7 +1197,11 @@ test("shows the safe extraction decision and fails closed on changed mail struct
 
   assert.match(page, /取得項目名 <small>シートで使う名前<\/small>/);
   assert.match(page, /メール本文で探す見出し/);
-  assert.match(page, /メール本文の別見出し/);
+  assert.match(page, /別のメール表記にも対応（任意）/);
+  assert.match(page, /追加で探す見出し/);
+  assert.match(page, /通常は空欄で問題ありません/);
+  assert.match(page, /このサンプル本文での取得結果/);
+  assert.match(page, /判定理由：/);
   assert.match(page, /入力文字を正規表現として実行していません/);
   assert.match(page, /取得条件と誤取得防止を確認/);
 });
